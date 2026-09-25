@@ -22,3 +22,19 @@ body {
   background: #a8a29e;
   border-radius: 8px;
 }
+
+
+/* Interactive farm map: native touch handling is disabled so React can
+   implement one-finger pan + two-finger pinch without browser scrolling. */
+.farm-map-canvas {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: contain;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.farm-map-canvas button,
+.farm-map-canvas [role="button"] {
+  touch-action: manipulation;
+}
