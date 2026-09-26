@@ -179,18 +179,29 @@ const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isD
   );
 };
 
-// 2. المروى (Water Canal) — شكل ثابت (راجع ملاحظة "قرار هندسي" في الملخص)
-const WaterCanalSVG = () => (
-  <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90">
-    <rect width="100" height="100" fill="#3b82f6" />
-    <path d="M -10 30 Q 25 15 50 30 T 110 30" fill="none" stroke="#93c5fd" strokeWidth="6" strokeLinecap="round" opacity="0.6" />
-    <path d="M -10 70 Q 25 55 50 70 T 110 70" fill="none" stroke="#93c5fd" strokeWidth="6" strokeLinecap="round" opacity="0.6" />
-  </svg>
-);
+// الأنواع الثلاثة التالية (مروى/مصرف/طريق) كلها "متصلة" بنفس المبدأ: كل خلية
+// تتحقق من جيرانها (فوق/تحت/يمين/شمال) من نفس النوع فقط، وتمتد نحوهم تلقائياً
+// بدل تكرار نفس الرمز المنفصل في كل خلية — فتظهر كشبكة واحدة متصلة.
 
-// 3. المصرف (Drainage) — متصل تلقائياً مع الخلايا المجاورة من نفس النوع.
-// الفكرة: مربع مركزي ثابت + امتداد (بروز) نحو كل اتجاه متصل، بنفس لون القناة،
-// فيلتحم بصرياً مع الخلية المجاورة بدل تكرار نفس الرمز المنفصل في كل خلية.
+// 2. المروى (Water Canal) — بروز اللون الأزرق الغامق (القناة) نحو كل جار متصل،
+// وما تبقى يظهر بلون أفتح (ضفة المروى) في الاتجاهات غير المتصلة.
+const ConnectedWaterCanalSVG = ({ connections }: { connections: Connections }) => {
+  const { up, down, left, right } = connections;
+  return (
+    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90">
+      <rect width="100" height="100" fill="#bfdbfe" />
+      <rect x="25" y="25" width="50" height="50" fill="#3b82f6" />
+      {up && <rect x="25" y="0" width="50" height="25" fill="#3b82f6" />}
+      {down && <rect x="25" y="75" width="50" height="25" fill="#3b82f6" />}
+      {left && <rect x="0" y="25" width="25" height="50" fill="#3b82f6" />}
+      {right && <rect x="75" y="25" width="25" height="50" fill="#3b82f6" />}
+      <path d="M -10 30 Q 25 15 50 30 T 110 30" fill="none" stroke="#93c5fd" strokeWidth="4" strokeLinecap="round" opacity="0.5" />
+      <path d="M -10 70 Q 25 55 50 70 T 110 70" fill="none" stroke="#93c5fd" strokeWidth="4" strokeLinecap="round" opacity="0.5" />
+    </svg>
+  );
+};
+
+// 3. المصرف (Drainage) — مربع مركزي ثابت + امتداد (بروز) نحو كل اتجاه متصل.
 const ConnectedDrainageSVG = ({ connections }: { connections: Connections }) => {
   const { up, down, left, right } = connections;
   return (
@@ -205,14 +216,32 @@ const ConnectedDrainageSVG = ({ connections }: { connections: Connections }) => 
   );
 };
 
-// 4. طريق (Road)
-const RoadSVG = () => (
-  <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90">
-    <rect width="100" height="100" fill="#d6d3d1" />
-    <line x1="30" y1="0" x2="30" y2="100" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
-    <line x1="70" y1="0" x2="70" y2="100" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
-  </svg>
-);
+// 4. طريق (Road) — الرصفة نفسها موحّدة اللون دايماً (كانت كده أصلاً)، لكن خطوط
+// تقسيم المسار (الداشات) دلوقتي بتتجه أفقياً أو رأسياً حسب الجيران المتصلين
+// بدل اتجاه رأسي ثابت كان بيقطع أي طريق أفقي بخطوط غلط.
+const ConnectedRoadSVG = ({ connections }: { connections: Connections }) => {
+  const { up, down, left, right } = connections;
+  const vertical = up || down;
+  const horizontal = left || right;
+  return (
+    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90">
+      <rect width="100" height="100" fill="#d6d3d1" />
+      {vertical && (
+        <>
+          <line x1="30" y1="0" x2="30" y2="100" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
+          <line x1="70" y1="0" x2="70" y2="100" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
+        </>
+      )}
+      {horizontal && (
+        <>
+          <line x1="0" y1="30" x2="100" y2="30" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
+          <line x1="0" y1="70" x2="100" y2="70" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
+        </>
+      )}
+      {!vertical && !horizontal && <circle cx="50" cy="50" r="8" fill="#a8a29e" opacity="0.4" />}
+    </svg>
+  );
+};
 
 export default function App() {
   const [user, setUser] = useState<User | { uid: string } | null>(null);
@@ -564,12 +593,18 @@ export default function App() {
     const data = cellsData[cellId];
     const type = data?.type || 'tree';
 
-    if (type === 'water_canal') return <WaterCanalSVG />;
+    if (type === 'water_canal') {
+      const connections = getConnections(cellId, 'water_canal', cellsData, rowLabels, colsCount);
+      return <ConnectedWaterCanalSVG connections={connections} />;
+    }
     if (type === 'drainage') {
       const connections = getConnections(cellId, 'drainage', cellsData, rowLabels, colsCount);
       return <ConnectedDrainageSVG connections={connections} />;
     }
-    if (type === 'road') return <RoadSVG />;
+    if (type === 'road') {
+      const connections = getConnections(cellId, 'road', cellsData, rowLabels, colsCount);
+      return <ConnectedRoadSVG connections={connections} />;
+    }
 
     // مساحة الشجرة: تُعتبر "مُدخلة" فقط لو المستخدم حفظ بياناتها فعلاً
     // (وجود lastUpdated)، وإلا تظهر كموقع فارغ لم يُدخل بعد (تصحيح لعرض كانت
