@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useLayoutEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
   Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2,
@@ -62,7 +62,7 @@ function getRowLabel(index: number): string {
   return label;
 }
 
-const MANGO_VARIETIES = ['غير محدد', 'عويس', 'فونس', 'كيت', 'نعومي', 'زبدية', 'تيمور', 'أخرى'];
+const MANGO_VARIETIES = ['غير محدد', 'عويس', 'فونس', 'كيت', 'نعومي', 'زبدية', 'تيمور', 'كحراوي', 'أخرى'];
 const TREE_STATUS = ['سليمة', 'تحتاج تقليم', 'مصابة بآفة/مرض'];
 const DISEASES = ['لا يوجد', 'عفن هبابي', 'ذبابة الفاكهة', 'تشوه زهري', 'أخرى'];
 
@@ -280,36 +280,14 @@ export default function App() {
   const posRef = useRef({ x: 0, y: 0 });
   const panZoomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const hasFitOnce = useRef(false);
-
-  const clampScale = (s: number) => Math.min(Math.max(0.35, s), 2.5);
-
-  // يمنع أن تختفي المزرعة بالكامل خارج الشاشة (بالسحب أو بالتصغير): بعد أي
-  // تحديث لموضع المحتوى، نضمن إن جزء منها (80px على الأقل) يفضل ظاهر دايماً،
-  // مع السماح الكامل بالوصول لأي حافة/ركن.
-  const clampPosition = (pos: { x: number; y: number }, scale: number) => {
-    const container = containerRef.current;
-    const content = panZoomRef.current;
-    if (!container || !content) return pos;
-    const containerRect = container.getBoundingClientRect();
-    const scaledWidth = content.offsetWidth * scale;
-    const scaledHeight = content.offsetHeight * scale;
-    const minVisible = 80;
-    const minX = minVisible - scaledWidth;
-    const maxX = containerRect.width - minVisible;
-    const minY = minVisible - scaledHeight;
-    const maxY = containerRect.height - minVisible;
-    return {
-      x: Math.min(Math.max(pos.x, minX), maxX),
-      y: Math.min(Math.max(pos.y, minY), maxY),
-    };
-  };
 
   const applyTransform = () => {
-    if (!panZoomRef.current) return;
-    posRef.current = clampPosition(posRef.current, scaleRef.current);
-    panZoomRef.current.style.transform = `translate(${posRef.current.x}px, ${posRef.current.y}px) scale(${scaleRef.current})`;
+    if (panZoomRef.current) {
+      panZoomRef.current.style.transform = `translate(${posRef.current.x}px, ${posRef.current.y}px) scale(${scaleRef.current})`;
+    }
   };
+
+  const clampScale = (s: number) => Math.min(Math.max(0.15, s), 3);
 
   // تكبير/تصغير مع تثبيت النقطة الموجودة تحت المؤشر/الإصبع في مكانها (بدل
   // التكبير دائماً من زاوية الشبكة العلوية، وهو ما كان يسبب "قفز" المحتوى).
@@ -327,33 +305,11 @@ export default function App() {
     applyTransform();
   }, []);
 
-  // يحسب حجم المزرعة الطبيعي (قبل أي تحويل) ويلائمها داخل الشاشة المتاحة مع
-  // توسيطها. يُستخدم مرة واحدة تلقائياً عند التحميل الأول، وأيضاً مع زرار
-  // "إعادة ضبط الرؤية" حتى ما تختفيش المزرعة لو كانت أكبر بكتير من الشاشة.
-  const fitToViewport = useCallback(() => {
-    const container = containerRef.current;
-    const content = panZoomRef.current;
-    if (!container || !content) return;
-
-    const containerRect = container.getBoundingClientRect();
-    const naturalWidth = content.offsetWidth;
-    const naturalHeight = content.offsetHeight;
-    if (!naturalWidth || !naturalHeight || !containerRect.width || !containerRect.height) return;
-
-    const margin = 24;
-    const availableWidth = Math.max(containerRect.width - margin * 2, 50);
-    const availableHeight = Math.max(containerRect.height - margin * 2, 50);
-    const fitScale = clampScale(Math.min(availableWidth / naturalWidth, availableHeight / naturalHeight));
-
-    scaleRef.current = fitScale;
-    posRef.current = {
-      x: (containerRect.width - naturalWidth * fitScale) / 2,
-      y: (containerRect.height - naturalHeight * fitScale) / 2,
-    };
+  const resetView = () => {
+    scaleRef.current = 1;
+    posRef.current = { x: 0, y: 0 };
     applyTransform();
-  }, []);
-
-  const resetView = () => fitToViewport();
+  };
 
   const zoomInBtn = () => {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -383,27 +339,6 @@ export default function App() {
       if (container) container.removeEventListener('wheel', handleWheel);
     };
   }, [handleWheel]);
-
-  // ملاءمة المزرعة تلقائياً داخل الشاشة عند أول ظهور للشبكة فقط (مرة واحدة)،
-  // وبعدها يبقى المستخدم حر تماماً في التكبير/التحريك يدوياً كما هو مطلوب.
-  useLayoutEffect(() => {
-    if (loading || hasFitOnce.current) return;
-    fitToViewport();
-    hasFitOnce.current = true;
-  }, [loading, fitToViewport]);
-
-  // عند تدوير الموبايل (أو تغيير حجم النافذة)، لا نلغي اختيار المستخدم
-  // للتكبير/الموضع، لكن "نعيد تثبيته" داخل الحدود الجديدة للشاشة فقط — وده
-  // اللي بيمنع ظهور حواف فاضية بعد التدوير للوضع الأفقي (landscape).
-  useEffect(() => {
-    const handleResize = () => applyTransform();
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('orientationchange', handleResize);
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('orientationchange', handleResize);
-    };
-  }, []);
 
   // ---- تحميل البيانات عند بدء التشغيل: Firebase لو متاح، وإلا محلياً ----
   useEffect(() => {
@@ -713,7 +648,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen min-w-0 bg-gray-100 font-sans overflow-hidden pt-[env(safe-area-inset-top)] pb-[env(safe-area-inset-bottom)] pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]" dir="rtl">
+    <div className="flex flex-col h-screen bg-gray-100 font-sans overflow-hidden" dir="rtl">
 
       {/* شريط العنوان وأدوات التحكم في الوضع */}
       <header className="bg-emerald-900 text-white p-4 shadow-md flex flex-wrap gap-4 justify-between items-center z-20 relative">
@@ -825,7 +760,7 @@ export default function App() {
       )}
 
       {/* منطقة الخريطة */}
-      <main className="flex-1 min-w-0 min-h-0 relative overflow-hidden bg-[#faf8f5]" style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
+      <main className="flex-1 relative overflow-hidden bg-[#faf8f5]" style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
 
         {/* أزرار الزووم */}
         <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
@@ -845,7 +780,7 @@ export default function App() {
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          className={`relative w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          className={`w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -854,7 +789,7 @@ export default function App() {
           <div
             ref={panZoomRef}
             style={{ transformOrigin: '0 0' }}
-            className="absolute left-0 top-0 p-16"
+            className="inline-block p-16"
           >
             {/* أرضية المزرعة والشبكة */}
             <div
