@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
-  Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus,
+  Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
@@ -261,6 +261,10 @@ export default function App() {
   // منتقي نوع الخلية في وضع التخطيط (بديل التبديل التلقائي القديم)
   const [typePicker, setTypePicker] = useState<{ cellId: string; x: number; y: number } | null>(null);
 
+  // قائمة "إضافة صف/عمود" الموحّدة + تأكيد إعادة تعيين المزرعة بالكامل
+  const [showAddMenu, setShowAddMenu] = useState(false);
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
+
   const [isDragging, setIsDragging] = useState(false);
 
   const rowLabels = React.useMemo(
@@ -437,6 +441,14 @@ export default function App() {
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
+
+  // إعادة تعيين المزرعة بالكامل: مسح كل بيانات الخلايا (أشجار/مروى/مصرف/طريق)
+  // مع الإبقاء على حجم الشبكة الحالي (عدد الصفوف/الأعمدة) كما هو — قرار مقصود:
+  // "reset" هنا يعني مسح البيانات لا تصغير الشبكة اللي وسّعتها بنفسك.
+  const resetFarm = () => {
+    setShowResetConfirm(false);
+    persistFarmState({}, rowsCount, colsCount);
+  };
 
   // ============================================================================
   // التحكم الموحّد باللمس والفأرة عبر Pointer Events: إصبع واحد/فأرة = تحريك،
@@ -703,10 +715,47 @@ export default function App() {
         </div>
       )}
 
-      {/* شريط الإشعارات لوضع التخطيط */}
+      {/* شريط أدوات وضع التخطيط: تنبيه + إضافة صف/عمود + إعادة تعيين */}
       {mode === 'edit' && (
-        <div className="bg-amber-100 text-amber-900 px-4 py-2 text-sm text-center font-semibold shadow-sm z-10 border-b border-amber-200">
-          ⚠️ أنت الآن في وضع التخطيط: اضغط على أي مساحة لاختيار نوعها من القائمة
+        <div className="bg-amber-100 text-amber-900 px-4 py-2 shadow-sm z-10 border-b border-amber-200 flex flex-wrap items-center justify-between gap-2">
+          <span className="text-sm font-semibold">⚠️ أنت الآن في وضع التخطيط: اضغط على أي مساحة لاختيار نوعها من القائمة</span>
+
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <button
+                onClick={() => setShowAddMenu((v) => !v)}
+                className="flex items-center gap-1 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
+              >
+                <Plus size={14} /> إضافة
+              </button>
+              {showAddMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowAddMenu(false)} />
+                  <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden min-w-[140px]">
+                    <button
+                      onClick={() => { setShowAddMenu(false); addRow(); }}
+                      className="w-full text-right px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 transition-colors"
+                    >
+                      + صف جديد
+                    </button>
+                    <button
+                      onClick={() => { setShowAddMenu(false); addColumn(); }}
+                      className="w-full text-right px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 transition-colors border-t border-gray-100"
+                    >
+                      + عمود جديد
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <button
+              onClick={() => setShowResetConfirm(true)}
+              className="flex items-center gap-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
+            >
+              <Trash2 size={14} /> إعادة تعيين المزرعة
+            </button>
+          </div>
         </div>
       )}
 
@@ -742,86 +791,62 @@ export default function App() {
             style={{ transformOrigin: '0 0' }}
             className="inline-block p-16"
           >
-            <div className="flex items-start gap-2">
-              {/* أرضية المزرعة والشبكة */}
-              <div
-                className="bg-[#f0eadd] p-6 rounded-xl shadow-2xl border-[6px] border-[#d4c5a9]"
-                style={{
-                  display: 'grid',
-                  gridTemplateColumns: `50px repeat(${colsCount}, 55px)`,
-                  gridAutoRows: '65px',
-                  gap: '4px',
-                }}
-              >
-                {/* صف الأرقام العلوي */}
-                <div className="bg-[#d4c5a9] rounded flex items-center justify-center font-bold text-[#5c4e36] shadow-inner mb-2">
-                  #
-                </div>
-                {[...Array(colsCount)].map((_, colIndex) => (
-                  <div key={`header-${colIndex}`} className="bg-[#e6ddca] rounded flex items-center justify-center font-bold text-[#5c4e36] text-sm mb-2 shadow-sm">
-                    {colIndex + 1}
-                  </div>
-                ))}
-
-                {/* صفوف المزرعة */}
-                {rowLabels.map((rowLetter) => (
-                  <React.Fragment key={rowLetter}>
-                    {/* حرف الصف */}
-                    <div className="bg-[#d4c5a9] rounded flex items-center justify-center font-bold text-[#5c4e36] text-lg sticky right-0 z-10 shadow-sm">
-                      {rowLetter}
-                    </div>
-
-                    {/* مساحات/خلايا الصف */}
-                    {[...Array(colsCount)].map((_, colIndex) => {
-                      const cellId = `${rowLetter}-${colIndex + 1}`;
-                      const cellType = cellsData[cellId]?.type || 'tree';
-
-                      return (
-                        <div
-                          key={cellId}
-                          data-cell-id={cellId}
-                          className={`relative w-full h-full flex items-center justify-center rounded-sm ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
-                          title={mode === 'edit' ? `تعديل: ${cellId}` : (cellType === 'tree' ? `شجرة ${cellId}` : '')}
-                        >
-                          {renderCellContent(cellId)}
-
-                          {/* رقم تعريف المساحة */}
-                          <span className="absolute -bottom-1 bg-white/90 border border-gray-200 px-1 rounded-[3px] text-[8px] font-bold text-gray-700 shadow-sm pointer-events-none z-10">
-                            {cellId}
-                          </span>
-                        </div>
-                      );
-                    })}
-                  </React.Fragment>
-                ))}
+            {/* أرضية المزرعة والشبكة */}
+            <div
+              className="bg-[#f0eadd] p-6 rounded-xl shadow-2xl border-[6px] border-[#d4c5a9]"
+              style={{
+                display: 'grid',
+                gridTemplateColumns: `50px repeat(${colsCount}, 55px)`,
+                gridAutoRows: '65px',
+                gap: '4px',
+              }}
+            >
+              {/* صف الأرقام العلوي */}
+              <div className="bg-[#d4c5a9] rounded flex items-center justify-center font-bold text-[#5c4e36] shadow-inner mb-2">
+                #
               </div>
+              {[...Array(colsCount)].map((_, colIndex) => (
+                <div key={`header-${colIndex}`} className="bg-[#e6ddca] rounded flex items-center justify-center font-bold text-[#5c4e36] text-sm mb-2 shadow-sm">
+                  {colIndex + 1}
+                </div>
+              ))}
 
-              {/* زر إضافة عمود جديد (وضع التخطيط فقط) */}
-              {mode === 'edit' && (
-                <button
-                  onClick={addColumn}
-                  className="self-stretch flex flex-col items-center justify-center gap-1 px-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl shadow-md transition-colors"
-                  title="إضافة عمود جديد"
-                >
-                  <Plus size={18} />
-                  <span className="text-[10px] font-bold [writing-mode:vertical-rl]">عمود جديد</span>
-                </button>
-              )}
+              {/* صفوف المزرعة */}
+              {rowLabels.map((rowLetter) => (
+                <React.Fragment key={rowLetter}>
+                  {/* حرف الصف */}
+                  <div className="bg-[#d4c5a9] rounded flex items-center justify-center font-bold text-[#5c4e36] text-lg sticky right-0 z-10 shadow-sm">
+                    {rowLetter}
+                  </div>
+
+                  {/* مساحات/خلايا الصف */}
+                  {[...Array(colsCount)].map((_, colIndex) => {
+                    const cellId = `${rowLetter}-${colIndex + 1}`;
+                    const cellType = cellsData[cellId]?.type || 'tree';
+
+                    return (
+                      <div
+                        key={cellId}
+                        data-cell-id={cellId}
+                        className={`relative w-full h-full flex items-center justify-center rounded-sm ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
+                        title={mode === 'edit' ? `تعديل: ${cellId}` : (cellType === 'tree' ? `شجرة ${cellId}` : '')}
+                      >
+                        {renderCellContent(cellId)}
+
+                        {/* رقم تعريف المساحة */}
+                        <span className="absolute -bottom-1 bg-white/90 border border-gray-200 px-1 rounded-[3px] text-[8px] font-bold text-gray-700 shadow-sm pointer-events-none z-10">
+                          {cellId}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </React.Fragment>
+              ))}
             </div>
-
-            {/* زر إضافة صف جديد (وضع التخطيط فقط) */}
-            {mode === 'edit' && (
-              <button
-                onClick={addRow}
-                className="mt-2 w-full flex items-center justify-center gap-2 py-2 bg-emerald-700 hover:bg-emerald-800 text-white rounded-xl shadow-md transition-colors text-sm font-bold"
-                title="إضافة صف جديد"
-              >
-                <Plus size={16} /> صف جديد
-              </button>
-            )}
           </div>
         </div>
       </main>
+
 
       {/* منتقي نوع الخلية — يظهر بجانب نقطة الضغط في وضع التخطيط */}
       {typePicker && (
@@ -949,6 +974,37 @@ export default function App() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+      {/* تأكيد إعادة تعيين المزرعة بالكامل (إجراء لا يمكن التراجع عنه) */}
+      {showResetConfirm && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-sm overflow-hidden">
+            <div className="p-6 flex flex-col gap-4">
+              <div className="flex items-center gap-2 text-red-600">
+                <AlertTriangle size={22} />
+                <h2 className="text-lg font-bold text-gray-800 m-0">إعادة تعيين المزرعة بالكامل؟</h2>
+              </div>
+              <p className="text-sm text-gray-600 m-0 leading-relaxed">
+                هيتم مسح كل بيانات الأشجار والمروى والمصرف والطرق نهائياً، ومفيش رجوع بعد كده.
+                حجم الشبكة (عدد الصفوف والأعمدة الحالي) هيفضل زي ما هو.
+              </p>
+              <div className="flex gap-3 mt-2">
+                <button
+                  onClick={resetFarm}
+                  className="flex-1 bg-red-600 hover:bg-red-700 text-white font-bold py-2.5 px-4 rounded-xl transition-colors"
+                >
+                  نعم، امسح كل شيء
+                </button>
+                <button
+                  onClick={() => setShowResetConfirm(false)}
+                  className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-800 font-bold py-2.5 px-4 rounded-xl transition-colors border border-gray-300"
+                >
+                  إلغاء
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
