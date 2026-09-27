@@ -127,7 +127,7 @@ const MANGO_VARIETIES = ['غير محدد', 'عويس', 'فونس', 'كيت', '�
 const TREE_STATUS = ['سليمة', 'تحتاج تقليم', 'مصابة بآفة/مرض'];
 const DISEASES = ['لا يوجد', 'عفن هبابي', 'ذبابة الفاكهة', 'تشوه زهري', 'أخرى'];
 
-type CellType = 'tree' | 'water_canal' | 'drainage' | 'road';
+type CellType = 'tree' | 'water_canal' | 'drainage' | 'road' | 'spray_tank';
 type GapKind = 'road' | 'drainage' | 'gap';
 
 interface CellData {
@@ -149,6 +149,7 @@ const CELL_TYPE_OPTIONS: { type: CellType; emoji: string; label: string }[] = [
   { type: 'water_canal', emoji: '💧', label: 'مروى' },
   { type: 'drainage', emoji: '🕳️', label: 'مصرف' },
   { type: 'road', emoji: '🛣️', label: 'طريق' },
+  { type: 'spray_tank', emoji: '🛢️', label: 'حوض رش' },
 ];
 
 // ---- مساعد: إيجاد رقم خلية الجار في اتجاه معيّن (لأغراض ربط رسومات المصرف) ----
@@ -1300,6 +1301,15 @@ export default function App() {
 
     // Infrastructure is painted by the cell's full-bleed background so adjacent
     // road/drain/water cells can touch without visible grid gaps.
+    if (type === 'spray_tank') {
+      return (
+        <div className="farm-spray-tank" aria-label="حوض رش" title="حوض رش">
+          <div className="farm-spray-tank-icon">🛢️</div>
+          <span>حوض رش</span>
+        </div>
+      );
+    }
+
     if (type === 'water_canal' || type === 'drainage' || type === 'road' || forcedGapKind) {
       return null;
     }
@@ -1402,6 +1412,7 @@ export default function App() {
               <div className="flex items-center gap-1"><Waves size={14} className="text-stone-400" /> مصرف</div>
               <div className="flex items-center gap-1"><Route size={14} className="text-stone-300" /> طريق</div>
               <div className="flex items-center gap-1"><Leaf size={14} className="text-emerald-400" /> شجرة</div>
+              <div className="flex items-center gap-1"><span>🛢️</span> حوض رش</div>
             </div>
           )}
         </div>

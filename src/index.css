@@ -207,3 +207,30 @@ body {
 .farm-map-canvas * {
   -webkit-user-drag: none;
 }
+
+
+/* حوض الرش في تخطيط المزرعة */
+.farm-spray-tank {
+  width: 88%;
+  height: 88%;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: linear-gradient(180deg, #e0f2fe 0%, #bae6fd 100%);
+  border: 2px solid #0284c7;
+  box-shadow: inset 0 0 0 2px rgba(255,255,255,.55), 0 2px 5px rgba(2,132,199,.15);
+  color: #075985;
+  font-size: 10px;
+  font-weight: 800;
+  pointer-events: none;
+}
+.farm-spray-tank-icon {
+  font-size: 20px;
+  line-height: 1;
+}
+.farm-spray-tank span {
+  white-space: nowrap;
+}
