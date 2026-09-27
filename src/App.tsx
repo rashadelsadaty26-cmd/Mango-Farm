@@ -6,7 +6,7 @@ import {
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
-  getAuth, signInWithEmailAndPassword, onAuthStateChanged, setPersistence, browserLocalPersistence, signOut, type Auth, type User,
+  getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, updateProfile, onAuthStateChanged, setPersistence, browserLocalPersistence, signOut, type Auth, type User,
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -68,6 +68,12 @@ function authErrorMessage(code?: string): string {
       return 'تعذر الاتصال بالإنترنت. إذا سبق تسجيل الدخول على هذا الجهاز، أعد المحاولة عند توفر الاتصال.';
     case 'auth/invalid-email':
       return 'اسم المستخدم غير صالح.';
+    case 'auth/email-already-in-use':
+      return 'اسم المستخدم مستخدم بالفعل. اختر اسماً آخر.';
+    case 'auth/weak-password':
+      return 'كلمة المرور ضعيفة. استخدم 6 أحرف أو أرقام على الأقل.';
+    case 'auth/operation-not-allowed':
+      return 'تسجيل الدخول بكلمة المرور غير مفعّل في Firebase Authentication.';
     default:
       return 'تعذر تسجيل الدخول. تحقق من بيانات الدخول وحاول مرة أخرى.';
   }
@@ -278,42 +284,71 @@ function LoginPage({
 }: {
   authInstance: Auth;
 }) {
+  const [mode, setMode] = useState<'login' | 'signup'>('login');
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [loginError, setLoginError] = useState('');
+  const [authError, setAuthError] = useState('');
+
+  const resetFormForMode = (nextMode: 'login' | 'signup') => {
+    setMode(nextMode);
+    setAuthError('');
+    setPassword('');
+    setConfirmPassword('');
+    setShowPassword(false);
+    setShowConfirmPassword(false);
+  };
 
   const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setLoginError('');
+    setAuthError('');
 
-    const normalizedUsername = username.trim();
+    const normalizedUsername = username.trim().toLowerCase();
     if (!normalizedUsername) {
-      setLoginError('اكتب اسم المستخدم.');
-      return;
-    }
-    if (!password) {
-      setLoginError('اكتب كلمة المرور.');
+      setAuthError('اكتب اسم المستخدم.');
       return;
     }
     if (!/^[a-zA-Z0-9._-]{3,64}$/.test(normalizedUsername)) {
-      setLoginError('اسم المستخدم يجب أن يحتوي على أحرف إنجليزية أو أرقام أو . _ - فقط.');
+      setAuthError('اسم المستخدم يجب أن يحتوي على أحرف إنجليزية أو أرقام أو . _ - فقط، وبطول 3 إلى 64 حرفاً.');
+      return;
+    }
+    if (!password) {
+      setAuthError('اكتب كلمة المرور.');
+      return;
+    }
+    if (mode === 'signup' && password.length < 6) {
+      setAuthError('كلمة المرور يجب أن تحتوي على 6 أحرف أو أرقام على الأقل.');
+      return;
+    }
+    if (mode === 'signup' && password !== confirmPassword) {
+      setAuthError('تأكيد كلمة المرور غير مطابق.');
       return;
     }
 
     setSubmitting(true);
     try {
       await setPersistence(authInstance, browserLocalPersistence);
-      await signInWithEmailAndPassword(authInstance, usernameToAuthEmail(normalizedUsername), password);
+      const authEmail = usernameToAuthEmail(normalizedUsername);
+
+      if (mode === 'login') {
+        await signInWithEmailAndPassword(authInstance, authEmail, password);
+      } else {
+        const credential = await createUserWithEmailAndPassword(authInstance, authEmail, password);
+        await updateProfile(credential.user, { displayName: normalizedUsername });
+      }
     } catch (err) {
-      console.error('Login error:', err);
+      console.error(mode === 'login' ? 'Login error:' : 'Signup error:', err);
       const code = typeof err === 'object' && err && 'code' in err ? String((err as { code?: unknown }).code) : undefined;
-      setLoginError(authErrorMessage(code));
+      setAuthError(authErrorMessage(code));
     } finally {
       setSubmitting(false);
     }
   };
+
+  const isSignup = mode === 'signup';
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-emerald-950 via-emerald-900 to-emerald-800 flex items-center justify-center p-4" dir="rtl">
@@ -324,7 +359,9 @@ function LoginPage({
               <Leaf size={34} />
             </div>
             <h1 className="text-2xl font-bold m-0">مزرعة الساداتي</h1>
-            <p className="text-emerald-200 text-sm mt-2 mb-0">تسجيل الدخول إلى نظام إدارة المزرعة</p>
+            <p className="text-emerald-200 text-sm mt-2 mb-0">
+              {isSignup ? 'إنشاء حساب جديد لإدارة المزرعة' : 'تسجيل الدخول إلى نظام إدارة المزرعة'}
+            </p>
           </div>
 
           <form onSubmit={handleSubmit} className="p-7 space-y-5">
@@ -343,6 +380,9 @@ function LoginPage({
                   className="w-full rounded-xl border border-gray-300 bg-gray-50 py-3 pr-10 pl-3 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:opacity-60"
                 />
               </div>
+              {isSignup && (
+                <p className="mt-2 text-xs text-gray-500">استخدم 3 إلى 64 حرفاً إنجليزياً أو أرقاماً أو . _ -</p>
+              )}
             </div>
 
             <div>
@@ -353,7 +393,7 @@ function LoginPage({
                   type={showPassword ? 'text' : 'password'}
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  autoComplete="current-password"
+                  autoComplete={isSignup ? 'new-password' : 'current-password'}
                   disabled={submitting}
                   placeholder="كلمة المرور"
                   className="w-full rounded-xl border border-gray-300 bg-gray-50 py-3 pr-10 pl-12 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:opacity-60"
@@ -370,23 +410,61 @@ function LoginPage({
               </div>
             </div>
 
-            {loginError && (
+            {isSignup && (
+              <div>
+                <label className="block text-sm font-bold text-gray-700 mb-2">تأكيد كلمة المرور</label>
+                <div className="relative">
+                  <LockKeyhole size={19} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type={showConfirmPassword ? 'text' : 'password'}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    disabled={submitting}
+                    placeholder="أعد كتابة كلمة المرور"
+                    className="w-full rounded-xl border border-gray-300 bg-gray-50 py-3 pr-10 pl-12 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:opacity-60"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowConfirmPassword((value) => !value)}
+                    disabled={submitting}
+                    aria-label={showConfirmPassword ? 'إخفاء تأكيد كلمة المرور' : 'إظهار تأكيد كلمة المرور'}
+                    className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 disabled:opacity-50"
+                  >
+                    {showConfirmPassword ? <EyeOff size={19} /> : <Eye size={19} />}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {authError && (
               <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
-                {loginError}
+                {authError}
               </div>
             )}
 
             <button
               type="submit"
               disabled={submitting}
-              className="w-full rounded-xl bg-emerald-700 py-3.5 text-white font-bold shadow-md transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 flex items-center justify-center gap-2"
+              className="w-full rounded-xl bg-emerald-700 py-3 text-white font-bold shadow-sm transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 flex items-center justify-center gap-2"
             >
-              {submitting ? <RefreshCw size={19} className="animate-spin" /> : <LogIn size={19} />}
-              {submitting ? 'جاري تسجيل الدخول...' : 'تسجيل الدخول'}
+              <LogIn size={18} />
+              {submitting
+                ? (isSignup ? 'جاري إنشاء الحساب...' : 'جاري تسجيل الدخول...')
+                : (isSignup ? 'إنشاء الحساب' : 'تسجيل الدخول')}
             </button>
 
-            <p className="text-xs text-gray-500 text-center leading-relaxed m-0">
-              بيانات الدخول تتم إدارتها من خلال Firebase Authentication.
+            <button
+              type="button"
+              disabled={submitting}
+              onClick={() => resetFormForMode(isSignup ? 'login' : 'signup')}
+              className="w-full rounded-xl border border-emerald-200 bg-emerald-50 py-3 text-emerald-800 font-bold transition hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {isSignup ? 'لدي حساب بالفعل — تسجيل الدخول' : 'مستخدم جديد — إنشاء حساب'}
+            </button>
+
+            <p className="text-center text-xs text-gray-500 leading-6 m-0">
+              كلمات المرور تتم إدارتها بأمان بواسطة Firebase Authentication، ولا يتم حفظها في Firestore أو Local Storage.
             </p>
           </form>
         </div>
