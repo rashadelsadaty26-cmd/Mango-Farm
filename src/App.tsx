@@ -67,6 +67,7 @@ const TREE_STATUS = ['سليمة', 'تحتاج تقليم', 'مصابة بآفة
 const DISEASES = ['لا يوجد', 'عفن هبابي', 'ذبابة الفاكهة', 'تشوه زهري', 'أخرى'];
 
 type CellType = 'tree' | 'water_canal' | 'drainage' | 'road';
+type GapKind = 'road' | 'drainage' | 'gap';
 
 interface CellData {
   type?: CellType;
@@ -135,8 +136,8 @@ function getConnections(
 const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isDiseased?: boolean; isEmpty?: boolean }) => {
   if (isEmpty) {
     return (
-      <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-sm opacity-60">
-        <ellipse cx="50" cy="90" rx="20" ry="4" fill="rgba(0,0,0,0.05)" />
+      <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-sm opacity-60 farm-map-tree-svg">
+        <ellipse className="tree-ground-shadow" cx="50" cy="90" rx="20" ry="4" fill="rgba(0,0,0,0.05)" />
         <path d="M50 90 L50 50" stroke="#9ca3af" strokeWidth="4" strokeLinecap="round" />
         <path d="M50 70 L35 55" stroke="#9ca3af" strokeWidth="3" strokeLinecap="round" />
         <circle cx="50" cy="45" r="8" fill="#d1d5db" />
@@ -146,8 +147,8 @@ const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isD
   }
 
   return (
-    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
-      <ellipse cx="50" cy="95" rx="25" ry="5" fill="rgba(0,0,0,0.15)" />
+    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md farm-map-tree-svg">
+      <ellipse className="tree-ground-shadow" cx="50" cy="95" rx="25" ry="5" fill="rgba(0,0,0,0.15)" />
       <path d="M45 95 C 45 75, 42 60, 42 50 L 58 50 C 58 60, 55 75, 55 95 Z" fill="#78350f" />
       <g fill={fill || '#059669'}>
         <circle cx="50" cy="30" r="28" />
@@ -157,16 +158,16 @@ const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isD
         <circle cx="62" cy="68" r="22" />
         <circle cx="50" cy="50" r="26" />
       </g>
-      <g fill="rgba(255,255,255,0.15)">
+      <g className="tree-detail-layer" fill="rgba(255,255,255,0.15)">
         <circle cx="40" cy="25" r="12" />
         <circle cx="22" cy="45" r="10" />
       </g>
-      <g fill="rgba(0,0,0,0.1)">
+      <g className="tree-detail-layer" fill="rgba(0,0,0,0.1)">
         <circle cx="60" cy="70" r="15" />
         <circle cx="75" cy="55" r="12" />
       </g>
       {isDiseased && (
-        <g fill="#450a0a" opacity="0.6">
+        <g className="tree-detail-layer" fill="#450a0a" opacity="0.6">
           <circle cx="45" cy="35" r="3" />
           <circle cx="60" cy="40" r="4" />
           <circle cx="35" cy="55" r="3" />
@@ -188,7 +189,7 @@ const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isD
 const ConnectedWaterCanalSVG = ({ connections }: { connections: Connections }) => {
   const { up, down, left, right } = connections;
   return (
-    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90">
+    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90 farm-map-non-tree">
       <rect width="100" height="100" fill="#bfdbfe" />
       <rect x="25" y="25" width="50" height="50" fill="#3b82f6" />
       {up && <rect x="25" y="0" width="50" height="25" fill="#3b82f6" />}
@@ -205,7 +206,7 @@ const ConnectedWaterCanalSVG = ({ connections }: { connections: Connections }) =
 const ConnectedDrainageSVG = ({ connections }: { connections: Connections }) => {
   const { up, down, left, right } = connections;
   return (
-    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-95">
+    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-95 farm-map-non-tree">
       <rect width="100" height="100" fill="#78716c" />
       <rect x="25" y="25" width="50" height="50" fill="#292524" />
       {up && <rect x="25" y="0" width="50" height="25" fill="#292524" />}
@@ -224,7 +225,7 @@ const ConnectedRoadSVG = ({ connections }: { connections: Connections }) => {
   const vertical = up || down;
   const horizontal = left || right;
   return (
-    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90">
+    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90 farm-map-non-tree">
       <rect width="100" height="100" fill="#d6d3d1" />
       {vertical && (
         <>
@@ -268,6 +269,8 @@ export default function App() {
   // These are stored by physical row index so the existing cell IDs stay unchanged.
   const [unlabeledRows, setUnlabeledRows] = useState<number[]>([]);
   const [unlabeledCols, setUnlabeledCols] = useState<number[]>([]);
+  const [rowGapKinds, setRowGapKinds] = useState<Record<number, GapKind>>({});
+  const [colGapKinds, setColGapKinds] = useState<Record<number, GapKind>>({});
   const [showRowNumberMenu, setShowRowNumberMenu] = useState(false);
   const [showColNumberMenu, setShowColNumberMenu] = useState(false);
 
@@ -297,8 +300,21 @@ export default function App() {
       ? unlabeledRows.filter((i) => i !== rowIndex)
       : [...unlabeledRows, rowIndex];
     next.sort((a, b) => a - b);
+
+    const nextKinds = { ...rowGapKinds };
+    if (exists) delete nextKinds[rowIndex];
+    else if (!nextKinds[rowIndex]) nextKinds[rowIndex] = 'gap';
+
     setUnlabeledRows(next);
-    persistFarmState(cellsData, rowsCount, colsCount, next);
+    setRowGapKinds(nextKinds);
+    persistFarmState(cellsData, rowsCount, colsCount, next, unlabeledCols, nextKinds, colGapKinds);
+  };
+
+  const setRowGapKind = (rowIndex: number, kind: GapKind) => {
+    if (!unlabeledRows.includes(rowIndex)) return;
+    const nextKinds = { ...rowGapKinds, [rowIndex]: kind };
+    setRowGapKinds(nextKinds);
+    persistFarmState(cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, nextKinds, colGapKinds);
   };
 
   // Display column numbers are separate from physical column indexes so a
@@ -320,35 +336,64 @@ export default function App() {
       ? unlabeledCols.filter((i) => i !== colIndex)
       : [...unlabeledCols, colIndex];
     next.sort((a, b) => a - b);
+
+    const nextKinds = { ...colGapKinds };
+    if (exists) delete nextKinds[colIndex];
+    else if (!nextKinds[colIndex]) nextKinds[colIndex] = 'gap';
+
     setUnlabeledCols(next);
-    persistFarmState(cellsData, rowsCount, colsCount, unlabeledRows, next);
+    setColGapKinds(nextKinds);
+    persistFarmState(cellsData, rowsCount, colsCount, unlabeledRows, next, rowGapKinds, nextKinds);
   };
 
-  // ---- تحريك وتكبير/تصغير: كل شيء عبر refs + تعديل مباشر لخاصية transform في
-  // الـ DOM، بدون أي setState أثناء السحب أو الزووم، حتى لا تُعاد رسمة الشبكة
-  // كاملة (قد تصل لآلاف الخلايا) في كل حركة فأر/إصبع — هذا هو سبب الإحساس
-  // بالبطء/الصعوبة سابقاً على الديسكتوب، وهو ما كان سيصبح أسوأ على الموبايل.
+  const setColGapKind = (colIndex: number, kind: GapKind) => {
+    if (!unlabeledCols.includes(colIndex)) return;
+    const nextKinds = { ...colGapKinds, [colIndex]: kind };
+    setColGapKinds(nextKinds);
+    persistFarmState(cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, nextKinds);
+  };
+
+  // ---- تحريك وتكبير/تصغير ----
+  // High-frequency map interactions stay outside React state. Geometry is cached
+  // and visual updates are batched with requestAnimationFrame so the 1,800-cell
+  // schedule is not re-rendered on every wheel/pointer event.
   const scaleRef = useRef(1);
+  const targetScaleRef = useRef(1);
   const posRef = useRef({ x: 0, y: 0 });
+  const targetPosRef = useRef({ x: 0, y: 0 });
   const panZoomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const transformFrameRef = useRef<number | null>(null);
+  const zoomAnimationFrameRef = useRef<number | null>(null);
   const wheelFrameRef = useRef<number | null>(null);
   const wheelDeltaRef = useRef(0);
   const wheelPointRef = useRef({ x: 0, y: 0 });
+  const lastZoomFrameTimeRef = useRef<number | null>(null);
+  const metricsRef = useRef({ viewportW: 0, viewportH: 0, contentW: 0, contentH: 0 });
+  const lowZoomClassRef = useRef(false);
 
-  const clampScale = (s: number) => Math.min(Math.max(0.15, s), 3);
+  const MIN_SCALE = 0.15;
+  const MAX_SCALE = 3;
+  const clampScale = (s: number) => Math.min(Math.max(MIN_SCALE, s), MAX_SCALE);
 
-  // Keep the farm inside the viewport when possible.  When the scaled farm is
-  // smaller than the viewport, center it instead of allowing it to drift away.
-  const clampPosition = useCallback((x: number, y: number, scale = scaleRef.current) => {
+  const measureMap = useCallback(() => {
     const container = containerRef.current;
     const content = panZoomRef.current;
-    if (!container || !content) return { x, y };
+    if (!container || !content) return metricsRef.current;
 
-    const viewportW = container.clientWidth;
-    const viewportH = container.clientHeight;
-    const contentW = content.offsetWidth;
-    const contentH = content.offsetHeight;
+    metricsRef.current = {
+      viewportW: container.clientWidth,
+      viewportH: container.clientHeight,
+      contentW: content.offsetWidth,
+      contentH: content.offsetHeight,
+    };
+    return metricsRef.current;
+  }, []);
+
+  const clampPosition = useCallback((x: number, y: number, scale = scaleRef.current) => {
+    const { viewportW, viewportH, contentW, contentH } = metricsRef.current;
+    if (!viewportW || !viewportH || !contentW || !contentH) return { x, y };
+
     const scaledW = contentW * scale;
     const scaledH = contentH * scale;
 
@@ -362,20 +407,74 @@ export default function App() {
     };
   }, []);
 
-  const applyTransform = useCallback(() => {
+  const writeTransform = useCallback(() => {
     const content = panZoomRef.current;
     if (!content) return;
 
-    posRef.current = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
-    content.style.transform = `translate3d(${posRef.current.x}px, ${posRef.current.y}px, 0) scale(${scaleRef.current})`;
+    const nextPos = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
+    posRef.current = nextPos;
+    content.style.transform = `translate3d(${nextPos.x}px, ${nextPos.y}px, 0) scale(${scaleRef.current})`;
 
-    // At deep zoom-out, remove only expensive visual effects. The actual
-    // schedule/cells stay exactly the same, so the layout never changes.
-    content.classList.toggle('farm-map-low-zoom', scaleRef.current < 0.55);
+    const shouldUseLowZoom = scaleRef.current < 0.55;
+    if (shouldUseLowZoom !== lowZoomClassRef.current) {
+      lowZoomClassRef.current = shouldUseLowZoom;
+      content.classList.toggle('farm-map-low-zoom', shouldUseLowZoom);
+    }
   }, [clampPosition]);
 
-  // تكبير/تصغير مع تثبيت النقطة الموجودة تحت المؤشر/الإصبع في مكانها (بدل
-  // التكبير دائماً من زاوية الشبكة العلوية، وهو ما كان يسبب "قفز" المحتوى).
+  const scheduleTransform = useCallback(() => {
+    if (transformFrameRef.current !== null) return;
+    transformFrameRef.current = requestAnimationFrame(() => {
+      transformFrameRef.current = null;
+      writeTransform();
+    });
+  }, [writeTransform]);
+
+  const stopZoomAnimation = useCallback(() => {
+    if (zoomAnimationFrameRef.current !== null) {
+      cancelAnimationFrame(zoomAnimationFrameRef.current);
+      zoomAnimationFrameRef.current = null;
+    }
+    lastZoomFrameTimeRef.current = null;
+  }, []);
+
+  const animateZoom = useCallback(() => {
+    if (zoomAnimationFrameRef.current !== null) return;
+
+    const tick = (time: number) => {
+      const last = lastZoomFrameTimeRef.current ?? time;
+      const dt = Math.min(40, Math.max(8, time - last));
+      lastZoomFrameTimeRef.current = time;
+
+      // Frame-rate independent exponential easing: responsive without jumps.
+      const t = 1 - Math.exp(-dt / 90);
+      const scaleDelta = targetScaleRef.current - scaleRef.current;
+      const xDelta = targetPosRef.current.x - posRef.current.x;
+      const yDelta = targetPosRef.current.y - posRef.current.y;
+
+      scaleRef.current += scaleDelta * t;
+      posRef.current = {
+        x: posRef.current.x + xDelta * t,
+        y: posRef.current.y + yDelta * t,
+      };
+      writeTransform();
+
+      const settled = Math.abs(scaleDelta) < 0.0005 && Math.abs(xDelta) < 0.05 && Math.abs(yDelta) < 0.05;
+      if (settled) {
+        scaleRef.current = targetScaleRef.current;
+        posRef.current = clampPosition(targetPosRef.current.x, targetPosRef.current.y, scaleRef.current);
+        writeTransform();
+        zoomAnimationFrameRef.current = null;
+        lastZoomFrameTimeRef.current = null;
+        return;
+      }
+
+      zoomAnimationFrameRef.current = requestAnimationFrame(tick);
+    };
+
+    zoomAnimationFrameRef.current = requestAnimationFrame(tick);
+  }, [clampPosition, writeTransform]);
+
   const zoomAtPoint = useCallback((clientX: number, clientY: number, newScaleRaw: number) => {
     const container = containerRef.current;
     if (!container) return;
@@ -384,70 +483,115 @@ export default function App() {
     const py = clientY - rect.top;
     const oldScale = scaleRef.current;
     const newScale = clampScale(newScaleRaw);
-    if (newScale === oldScale) return;
+    if (Math.abs(newScale - oldScale) < 0.0001) return;
 
-    // Keep the point below the cursor fixed while zooming. If that would move
-    // the farm outside its legal bounds, clamp only the excess movement.
-    const contentX = (px - posRef.current.x) / oldScale;
-    const contentY = (py - posRef.current.y) / oldScale;
-    scaleRef.current = newScale;
-    posRef.current = clampPosition(
-      px - contentX * newScale,
-      py - contentY * newScale,
+    const worldX = (px - posRef.current.x) / oldScale;
+    const worldY = (py - posRef.current.y) / oldScale;
+    const desiredPos = clampPosition(
+      px - worldX * newScale,
+      py - worldY * newScale,
       newScale
     );
-    applyTransform();
-  }, [applyTransform, clampPosition]);
 
-  const resetView = () => {
+    targetScaleRef.current = newScale;
+    targetPosRef.current = desiredPos;
+    animateZoom();
+  }, [animateZoom, clampPosition]);
+
+  const resetView = useCallback(() => {
+    measureMap();
+    stopZoomAnimation();
     scaleRef.current = 1;
+    targetScaleRef.current = 1;
     posRef.current = clampPosition(0, 0, 1);
-    applyTransform();
-  };
+    targetPosRef.current = posRef.current;
+    scheduleTransform();
+  }, [clampPosition, measureMap, scheduleTransform, stopZoomAnimation]);
 
-  const zoomInBtn = () => {
+  const zoomInBtn = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, scaleRef.current * 1.2);
-  };
+  }, [zoomAtPoint]);
 
-  const zoomOutBtn = () => {
+  const zoomOutBtn = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, scaleRef.current / 1.2);
-  };
+  }, [zoomAtPoint]);
 
-  // ---- Mouse wheel: merge bursts of wheel events into one frame so the
-  // browser does not repeatedly recalculate/composite the large farm layer.
+  // ---- Mouse wheel: accumulate wheel bursts and feed one smooth zoom target
+  // per frame. This keeps the map responsive without React renders per event.
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    wheelDeltaRef.current += e.deltaY;
+    const normalizedDelta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * (containerRef.current?.clientHeight || 800) : e.deltaY;
+    wheelDeltaRef.current += normalizedDelta;
     wheelPointRef.current = { x: e.clientX, y: e.clientY };
 
     if (wheelFrameRef.current !== null) return;
-
     wheelFrameRef.current = requestAnimationFrame(() => {
       wheelFrameRef.current = null;
       const delta = wheelDeltaRef.current;
       wheelDeltaRef.current = 0;
+      if (!delta) return;
+
       const point = wheelPointRef.current;
-      const factor = Math.exp(-delta * 0.0015);
+      const factor = Math.exp(-delta * 0.0012);
       zoomAtPoint(point.x, point.y, scaleRef.current * factor);
     });
   }, [zoomAtPoint]);
 
   useEffect(() => {
     const container = containerRef.current;
-    if (container) {
-      container.addEventListener('wheel', handleWheel, { passive: false });
-    }
+    if (!container) return;
+
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    measureMap();
+
+    const resizeObserver = new ResizeObserver(() => {
+      measureMap();
+      const clamped = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
+      posRef.current = clamped;
+      targetPosRef.current = clampPosition(targetPosRef.current.x, targetPosRef.current.y, targetScaleRef.current);
+      scheduleTransform();
+    });
+    resizeObserver.observe(container);
+    if (panZoomRef.current) resizeObserver.observe(panZoomRef.current);
+
+    // Position the map correctly after the first layout pass.
+    const initialFrame = requestAnimationFrame(() => {
+      measureMap();
+      const initialPos = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
+      posRef.current = initialPos;
+      targetPosRef.current = initialPos;
+      scheduleTransform();
+    });
+
     return () => {
-      if (container) container.removeEventListener('wheel', handleWheel);
+      container.removeEventListener('wheel', handleWheel);
+      resizeObserver.disconnect();
+      cancelAnimationFrame(initialFrame);
       if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
+      if (transformFrameRef.current !== null) cancelAnimationFrame(transformFrameRef.current);
+      stopZoomAnimation();
       wheelFrameRef.current = null;
+      transformFrameRef.current = null;
       wheelDeltaRef.current = 0;
     };
-  }, [handleWheel]);
+  }, [clampPosition, handleWheel, measureMap, scheduleTransform, stopZoomAnimation]);
+
+  // Re-measure when the physical grid size changes, without disturbing the
+  // user's zoom unless the new dimensions require clamping.
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => {
+      measureMap();
+      const next = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
+      posRef.current = next;
+      targetPosRef.current = clampPosition(targetPosRef.current.x, targetPosRef.current.y, targetScaleRef.current);
+      scheduleTransform();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [rowsCount, colsCount, measureMap, clampPosition, scheduleTransform]);
 
   // ---- تحميل البيانات عند بدء التشغيل: Firebase لو متاح، وإلا محلياً ----
   useEffect(() => {
@@ -461,6 +605,8 @@ export default function App() {
           setColsCount(parsed.colsCount || DEFAULT_COLS);
           setUnlabeledRows(Array.isArray(parsed.unlabeledRows) ? parsed.unlabeledRows.filter((n: unknown) => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(parsed.unlabeledCols) ? parsed.unlabeledCols.filter((n: unknown) => Number.isInteger(n)) : []);
+          setRowGapKinds(parsed.rowGapKinds && typeof parsed.rowGapKinds === 'object' ? parsed.rowGapKinds : {});
+          setColGapKinds(parsed.colGapKinds && typeof parsed.colGapKinds === 'object' ? parsed.colGapKinds : {});
         } else {
           setCellsData({});
         }
@@ -509,6 +655,8 @@ export default function App() {
           setColsCount(data.colsCount || DEFAULT_COLS);
           setUnlabeledRows(Array.isArray(data.unlabeledRows) ? data.unlabeledRows.filter((n): n is number => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(data.unlabeledCols) ? data.unlabeledCols.filter((n): n is number => Number.isInteger(n)) : []);
+          setRowGapKinds(data.rowGapKinds && typeof data.rowGapKinds === 'object' ? data.rowGapKinds as Record<number, GapKind> : {});
+          setColGapKinds(data.colGapKinds && typeof data.colGapKinds === 'object' ? data.colGapKinds as Record<number, GapKind> : {});
         } else {
           setCellsData({});
         }
@@ -530,14 +678,30 @@ export default function App() {
     nextCols: number,
     nextUnlabeledRows = unlabeledRows,
     nextUnlabeledCols = unlabeledCols,
+    nextRowGapKinds = rowGapKinds,
+    nextColGapKinds = colGapKinds,
   ) => {
     const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
     const cleanedUnlabeledCols = nextUnlabeledCols.filter((index) => Number.isInteger(index) && index >= 0 && index < nextCols);
+    const cleanedRowGapKinds = Object.fromEntries(
+      Object.entries(nextRowGapKinds).filter(([key, value]) => {
+        const index = Number(key);
+        return Number.isInteger(index) && cleanedUnlabeledRows.includes(index) && ['road', 'drainage', 'gap'].includes(value);
+      })
+    ) as Record<number, GapKind>;
+    const cleanedColGapKinds = Object.fromEntries(
+      Object.entries(nextColGapKinds).filter(([key, value]) => {
+        const index = Number(key);
+        return Number.isInteger(index) && cleanedUnlabeledCols.includes(index) && ['road', 'drainage', 'gap'].includes(value);
+      })
+    ) as Record<number, GapKind>;
     setCellsData(nextCells);
     setRowsCount(nextRows);
     setColsCount(nextCols);
     setUnlabeledRows(cleanedUnlabeledRows);
     setUnlabeledCols(cleanedUnlabeledCols);
+    setRowGapKinds(cleanedRowGapKinds);
+    setColGapKinds(cleanedColGapKinds);
 
     const payload = {
       cells: nextCells,
@@ -545,6 +709,8 @@ export default function App() {
       colsCount: nextCols,
       unlabeledRows: cleanedUnlabeledRows,
       unlabeledCols: cleanedUnlabeledCols,
+      rowGapKinds: cleanedRowGapKinds,
+      colGapKinds: cleanedColGapKinds,
     };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
@@ -566,7 +732,7 @@ export default function App() {
         setError('تعذر حفظ البيانات محلياً (قد تكون مساحة التخزين ممتلئة).');
       }
     }
-  }, [user, unlabeledRows, unlabeledCols]);
+  }, [user, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds]);
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -576,7 +742,7 @@ export default function App() {
   // "reset" هنا يعني مسح البيانات لا تصغير الشبكة اللي وسّعتها بنفسك.
   const resetFarm = () => {
     setShowResetConfirm(false);
-    persistFarmState({}, rowsCount, colsCount);
+    persistFarmState({}, rowsCount, colsCount, [], [], {}, {});
   };
 
   // ============================================================================
@@ -629,7 +795,7 @@ export default function App() {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    } catch { /* بعض المتصفحات لا تدعمها بالكامل */ }
+    } catch { /* ignore */ }
 
     const wasEmpty = pointers.current.size === 0;
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
@@ -639,14 +805,21 @@ export default function App() {
     }
 
     if (pointers.current.size === 1) {
-      panStart.current = { x: e.clientX - posRef.current.x, y: e.clientY - posRef.current.y };
+      stopZoomAnimation();
+      const current = posRef.current;
+      panStart.current = { x: e.clientX - current.x, y: e.clientY - current.y };
+      targetPosRef.current = current;
       pinchStart.current = null;
       setIsDragging(true);
     } else if (pointers.current.size === 2) {
+      stopZoomAnimation();
       const pts = getPointsArray();
       const dx = pts[0].x - pts[1].x;
       const dy = pts[0].y - pts[1].y;
-      pinchStart.current = { distance: Math.hypot(dx, dy) || 1, scale: scaleRef.current };
+      pinchStart.current = {
+        distance: Math.hypot(dx, dy) || 1,
+        scale: scaleRef.current,
+      };
       panStart.current = null;
       pinchOccurred.current = true;
     }
@@ -665,7 +838,8 @@ export default function App() {
         scaleRef.current
       );
       posRef.current = next;
-      applyTransform();
+      targetPosRef.current = next;
+      scheduleTransform();
     } else if (pointers.current.size === 2 && pinchStart.current) {
       const pts = getPointsArray();
       const dx = pts[0].x - pts[1].x;
@@ -681,7 +855,6 @@ export default function App() {
     pointers.current.delete(e.pointerId);
 
     if (pointers.current.size === 1) {
-      // إصبع واحد باقٍ بعد إنهاء pinch: نكمل تحريك سلس من غير قفزة
       const remaining = getPointsArray()[0];
       panStart.current = { x: remaining.x - posRef.current.x, y: remaining.y - posRef.current.y };
       pinchStart.current = null;
@@ -899,17 +1072,33 @@ export default function App() {
                     </div>
                     {Array.from({ length: colsCount }, (_, colIndex) => {
                       const isUnlabeled = unlabeledCols.includes(colIndex);
+                      const kind = colGapKinds[colIndex] || 'gap';
                       return (
-                        <button
-                          key={`col-number-${colIndex + 1}`}
-                          onClick={() => toggleColNumber(colIndex)}
-                          className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 border-b border-gray-100 last:border-b-0"
-                        >
-                          <span>العمود {colIndex + 1}</span>
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                            {isUnlabeled ? 'بدون رقم' : `رقم ${displayColLabels[colIndex]}`}
-                          </span>
-                        </button>
+                        <div key={`col-number-${colIndex + 1}`} className="border-b border-gray-100 last:border-b-0">
+                          <button
+                            onClick={() => toggleColNumber(colIndex)}
+                            className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50"
+                          >
+                            <span>العمود {colIndex + 1}</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                              {isUnlabeled ? 'بدون رقم' : `رقم ${displayColLabels[colIndex]}`}
+                            </span>
+                          </button>
+                          {isUnlabeled && (
+                            <div className="px-3 pb-2 grid grid-cols-3 gap-1">
+                              {([['road', 'طريق'], ['drainage', 'مصرف'], ['gap', 'فراغ']] as const).map(([value, label]) => (
+                                <button
+                                  key={value}
+                                  type="button"
+                                  onClick={() => setColGapKind(colIndex, value)}
+                                  className={`px-2 py-1 rounded text-[11px] font-bold border ${kind === value ? 'bg-stone-700 text-white border-stone-700' : 'bg-white text-gray-600 border-gray-200 hover:bg-stone-50'}`}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -933,17 +1122,33 @@ export default function App() {
                     </div>
                     {rowLabels.map((rowLetter, rowIndex) => {
                       const isUnlabeled = unlabeledRows.includes(rowIndex);
+                      const kind = rowGapKinds[rowIndex] || 'gap';
                       return (
-                        <button
-                          key={`row-number-${rowLetter}`}
-                          onClick={() => toggleRowNumber(rowIndex)}
-                          className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 border-b border-gray-100 last:border-b-0"
-                        >
-                          <span>الصف {rowIndex + 1} ({rowLetter})</span>
-                          <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
-                            {isUnlabeled ? 'بدون رقم' : `رقم ${displayRowLabels[rowIndex]}`}
-                          </span>
-                        </button>
+                        <div key={`row-number-${rowLetter}`} className="border-b border-gray-100 last:border-b-0">
+                          <button
+                            onClick={() => toggleRowNumber(rowIndex)}
+                            className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50"
+                          >
+                            <span>الصف {rowIndex + 1} ({rowLetter})</span>
+                            <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                              {isUnlabeled ? 'بدون رقم' : `رقم ${displayRowLabels[rowIndex]}`}
+                            </span>
+                          </button>
+                          {isUnlabeled && (
+                            <div className="px-3 pb-2 grid grid-cols-3 gap-1">
+                              {([['road', 'طريق'], ['drainage', 'مصرف'], ['gap', 'فراغ']] as const).map(([value, label]) => (
+                                <button
+                                  key={value}
+                                  type="button"
+                                  onClick={() => setRowGapKind(rowIndex, value)}
+                                  className={`px-2 py-1 rounded text-[11px] font-bold border ${kind === value ? 'bg-stone-700 text-white border-stone-700' : 'bg-white text-gray-600 border-gray-200 hover:bg-stone-50'}`}
+                                >
+                                  {label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </div>
                       );
                     })}
                   </div>
@@ -982,7 +1187,7 @@ export default function App() {
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          className={`w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`} style={{ direction: 'ltr' }}
+          className={`farm-map-canvas w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`} style={{ direction: 'ltr' }}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -991,7 +1196,7 @@ export default function App() {
           <div
             ref={panZoomRef}
             style={{ transformOrigin: '0 0' }}
-            className="inline-block p-16"
+            className="absolute left-0 top-0 inline-block p-16"
           >
             {/* أرضية المزرعة والشبكة */}
             <div
@@ -1017,7 +1222,7 @@ export default function App() {
               {rowLabels.map((rowLetter, rowIndex) => (
                 <React.Fragment key={rowLetter}>
                   {/* حرف/رقم الصف المعروض؛ قد يكون فارغاً لصف طريق/مصرف */}
-                  <div className="bg-[#d4c5a9] rounded flex items-center justify-center font-bold text-[#5c4e36] text-lg sticky right-0 z-10 shadow-sm">
+                  <div className={`rounded flex items-center justify-center font-bold text-[#5c4e36] text-lg sticky right-0 z-10 shadow-sm ${rowGapKinds[rowIndex] === 'road' ? 'bg-stone-300' : rowGapKinds[rowIndex] === 'drainage' ? 'bg-sky-200' : 'bg-[#d4c5a9]'}`}>
                     {displayRowLabels[rowIndex]}
                   </div>
 
@@ -1029,11 +1234,14 @@ export default function App() {
                       : (displayRowLabels[rowIndex] ? displayRowLabels[rowIndex] : '');
                     const cellType = cellsData[cellId]?.type || 'tree';
 
+                    const gapKind = rowGapKinds[rowIndex] || colGapKinds[colIndex];
+                    const gapBgClass = gapKind === 'road' ? 'bg-stone-200/80' : gapKind === 'drainage' ? 'bg-sky-100/80' : gapKind === 'gap' ? 'bg-gray-100/70' : '';
+
                     return (
                       <div
                         key={cellId}
                         data-cell-id={cellId}
-                        className={`relative w-full h-full flex items-center justify-center rounded-sm ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
+                        className={`farm-map-cell relative w-full h-full flex items-center justify-center rounded-sm ${gapBgClass} ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
                         title={mode === 'edit' ? `تعديل: ${cellId}` : (cellType === 'tree' ? `شجرة ${cellId}` : '')}
                       >
                         {renderCellContent(cellId)}
