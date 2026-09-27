@@ -41,3 +41,5 @@ body {
   touch-action: manipulation;
 }
 
+
+html, body, #root { background: #f0eadd; overscroll-behavior: none; }

@@ -306,9 +306,27 @@ export default function App() {
   };
 
   const clampScale = useCallback((s: number) => {
-    const minScale = Math.min(getCoverScale(), 3);
-    return Math.min(Math.max(minScale, s), 3);
+    const minScale = Math.min(getCoverScale(), 4);
+    return Math.min(Math.max(minScale, s), 4);
   }, [getCoverScale]);
+
+  // Never allow the schedule to be dragged far enough to expose the page behind it.
+  // The schedule always covers the entire viewport; only the schedule itself is visible.
+  const clampPan = useCallback(() => {
+    const container = containerRef.current;
+    const grid = farmGridRef.current;
+    if (!container || !grid) return;
+
+    const scaledW = grid.offsetWidth * scaleRef.current;
+    const scaledH = grid.offsetHeight * scaleRef.current;
+    const minX = Math.min(0, container.clientWidth - scaledW);
+    const minY = Math.min(0, container.clientHeight - scaledH);
+
+    posRef.current = {
+      x: Math.min(0, Math.max(minX, posRef.current.x)),
+      y: Math.min(0, Math.max(minY, posRef.current.y)),
+    };
+  }, []);
 
   // تكبير/تصغير مع تثبيت النقطة الموجودة تحت المؤشر/الإصبع في مكانها (بدل
   // التكبير دائماً من زاوية الشبكة العلوية، وهو ما كان يسبب "قفز" المحتوى).
@@ -323,8 +341,9 @@ export default function App() {
     const contentY = (py - posRef.current.y) / scaleRef.current;
     posRef.current = { x: px - contentX * newScale, y: py - contentY * newScale };
     scaleRef.current = newScale;
+    clampPan();
     applyTransform();
-  }, []);
+  }, [clampPan]);
 
   const resetView = () => {
     const scale = clampScale(getCoverScale());
@@ -372,13 +391,14 @@ export default function App() {
       const minScale = getCoverScale();
       if (scaleRef.current < minScale) {
         scaleRef.current = minScale;
+        clampPan();
         applyTransform();
       }
     };
     updateZoomFloor();
     window.addEventListener('resize', updateZoomFloor);
     return () => window.removeEventListener('resize', updateZoomFloor);
-  }, [rowsCount, colsCount, getCoverScale]);
+  }, [rowsCount, colsCount, getCoverScale, clampPan]);
 
   // Start already fitted to the schedule, so the page never opens with a
   // large empty area around it.
@@ -589,6 +609,7 @@ export default function App() {
 
     if (pointers.current.size === 1 && panStart.current) {
       posRef.current = { x: e.clientX - panStart.current.x, y: e.clientY - panStart.current.y };
+      clampPan();
       applyTransform();
     } else if (pointers.current.size === 2 && pinchStart.current) {
       const pts = getPointsArray();
@@ -818,7 +839,7 @@ export default function App() {
       )}
 
       {/* منطقة الخريطة */}
-      <main className="flex-1 relative overflow-hidden bg-[#f0eadd]">
+      <main className="flex-1 relative overflow-hidden bg-[#f0eadd] select-none">
 
         {/* أزرار الزووم */}
         <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
@@ -838,7 +859,7 @@ export default function App() {
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          className={`w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          className={`w-full h-full touch-none bg-[#f0eadd] ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -852,7 +873,7 @@ export default function App() {
             {/* أرضية المزرعة والشبكة */}
             <div
               ref={farmGridRef}
-              className="bg-[#f0eadd] p-6 rounded-xl shadow-2xl border-[6px] border-[#d4c5a9]"
+              className="bg-[#f0eadd] p-0"
               style={{
                 display: 'grid',
                 gridTemplateColumns: `50px repeat(${colsCount}, 55px)`,
