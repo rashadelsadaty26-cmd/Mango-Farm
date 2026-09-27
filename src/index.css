@@ -11,8 +11,6 @@ body,
 body {
   font-family: 'Cairo', ui-sans-serif, system-ui, sans-serif;
   margin: 0;
-  overflow: hidden;
-  background: #f0eadd;
 }
 
 /* شريط تمرير أهدأ بصرياً */
@@ -40,6 +38,3 @@ body {
 .farm-map-canvas [role="button"] {
   touch-action: manipulation;
 }
-
-
-html, body, #root { background: #f0eadd; overscroll-behavior: none; }
