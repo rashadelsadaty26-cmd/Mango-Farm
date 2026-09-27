@@ -760,7 +760,7 @@ export default function App() {
       )}
 
       {/* منطقة الخريطة */}
-      <main className="flex-1 relative overflow-hidden bg-[#faf8f5]" style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
+      <main className="flex-1 relative overflow-auto bg-white">
 
         {/* أزرار الزووم */}
         <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
@@ -789,7 +789,7 @@ export default function App() {
           <div
             ref={panZoomRef}
             style={{ transformOrigin: '0 0' }}
-            className="inline-block p-16"
+            className="inline-block p-4"
           >
             {/* أرضية المزرعة والشبكة */}
             <div

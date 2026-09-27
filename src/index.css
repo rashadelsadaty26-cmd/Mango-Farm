@@ -38,3 +38,5 @@ body {
 .farm-map-canvas [role="button"] {
   touch-action: manipulation;
 }
+
+body { background: #fff; }
