@@ -2,11 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
   Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2, Hash,
-  WifiOff, RefreshCw, CheckCircle2, AlertCircle,
+  WifiOff, RefreshCw, CheckCircle2, AlertCircle, LogIn, LogOut, UserRound, LockKeyhole, Eye, EyeOff,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
-  getAuth, signInAnonymously, onAuthStateChanged, type Auth, type User,
+  getAuth, signInWithEmailAndPassword, onAuthStateChanged, setPersistence, browserLocalPersistence, signOut, type Auth, type User,
 } from 'firebase/auth';
 import {
   initializeFirestore,
@@ -44,6 +44,34 @@ const firebaseConfig = {
 };
 
 const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
+
+// The UI intentionally asks for a username instead of exposing an email field.
+// Firebase Email/Password Auth remains the underlying credential provider, so the
+// username is deterministically mapped to a private synthetic email address.
+// Users and passwords are managed in Firebase Authentication; no service-account
+// credentials are stored in the browser.
+const AUTH_USERNAME_DOMAIN = 'mango-farm-4b1a6.firebaseapp.com';
+
+function usernameToAuthEmail(username: string): string {
+  return `${username.trim().toLowerCase()}@${AUTH_USERNAME_DOMAIN}`;
+}
+
+function authErrorMessage(code?: string): string {
+  switch (code) {
+    case 'auth/invalid-credential':
+    case 'auth/user-not-found':
+    case 'auth/wrong-password':
+      return 'اسم المستخدم أو كلمة المرور غير صحيحة.';
+    case 'auth/too-many-requests':
+      return 'تم إيقاف المحاولات مؤقتاً. حاول مرة أخرى لاحقاً.';
+    case 'auth/network-request-failed':
+      return 'تعذر الاتصال بالإنترنت. إذا سبق تسجيل الدخول على هذا الجهاز، أعد المحاولة عند توفر الاتصال.';
+    case 'auth/invalid-email':
+      return 'اسم المستخدم غير صالح.';
+    default:
+      return 'تعذر تسجيل الدخول. تحقق من بيانات الدخول وحاول مرة أخرى.';
+  }
+}
 
 let auth: Auth | undefined;
 let db: Firestore | undefined;
@@ -244,6 +272,128 @@ const ConnectedDrainageSVG = (_props: { connections: Connections }) => (
 const ConnectedRoadSVG = (_props: { connections: Connections }) => (
   <div className="farm-flat-infra farm-flat-road" aria-label="طريق" />
 );
+
+function LoginPage({
+  authInstance,
+}: {
+  authInstance: Auth;
+}) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [loginError, setLoginError] = useState('');
+
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setLoginError('');
+
+    const normalizedUsername = username.trim();
+    if (!normalizedUsername) {
+      setLoginError('اكتب اسم المستخدم.');
+      return;
+    }
+    if (!password) {
+      setLoginError('اكتب كلمة المرور.');
+      return;
+    }
+    if (!/^[a-zA-Z0-9._-]{3,64}$/.test(normalizedUsername)) {
+      setLoginError('اسم المستخدم يجب أن يحتوي على أحرف إنجليزية أو أرقام أو . _ - فقط.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      await setPersistence(authInstance, browserLocalPersistence);
+      await signInWithEmailAndPassword(authInstance, usernameToAuthEmail(normalizedUsername), password);
+    } catch (err) {
+      console.error('Login error:', err);
+      const code = typeof err === 'object' && err && 'code' in err ? String((err as { code?: unknown }).code) : undefined;
+      setLoginError(authErrorMessage(code));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-emerald-950 via-emerald-900 to-emerald-800 flex items-center justify-center p-4" dir="rtl">
+      <div className="w-full max-w-md">
+        <div className="bg-white rounded-3xl shadow-2xl overflow-hidden">
+          <div className="bg-emerald-900 text-white px-7 py-8 text-center">
+            <div className="mx-auto mb-4 w-16 h-16 rounded-2xl bg-emerald-100 text-emerald-800 flex items-center justify-center shadow-lg">
+              <Leaf size={34} />
+            </div>
+            <h1 className="text-2xl font-bold m-0">مزرعة الساداتي</h1>
+            <p className="text-emerald-200 text-sm mt-2 mb-0">تسجيل الدخول إلى نظام إدارة المزرعة</p>
+          </div>
+
+          <form onSubmit={handleSubmit} className="p-7 space-y-5">
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">اسم المستخدم</label>
+              <div className="relative">
+                <UserRound size={19} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type="text"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  autoComplete="username"
+                  autoFocus
+                  disabled={submitting}
+                  placeholder="اسم المستخدم"
+                  className="w-full rounded-xl border border-gray-300 bg-gray-50 py-3 pr-10 pl-3 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:opacity-60"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-bold text-gray-700 mb-2">كلمة المرور</label>
+              <div className="relative">
+                <LockKeyhole size={19} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="current-password"
+                  disabled={submitting}
+                  placeholder="كلمة المرور"
+                  className="w-full rounded-xl border border-gray-300 bg-gray-50 py-3 pr-10 pl-12 outline-none transition focus:border-emerald-600 focus:ring-2 focus:ring-emerald-100 disabled:opacity-60"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword((value) => !value)}
+                  disabled={submitting}
+                  aria-label={showPassword ? 'إخفاء كلمة المرور' : 'إظهار كلمة المرور'}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 disabled:opacity-50"
+                >
+                  {showPassword ? <EyeOff size={19} /> : <Eye size={19} />}
+                </button>
+              </div>
+            </div>
+
+            {loginError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-semibold text-red-700">
+                {loginError}
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full rounded-xl bg-emerald-700 py-3.5 text-white font-bold shadow-md transition hover:bg-emerald-800 disabled:cursor-not-allowed disabled:opacity-60 flex items-center justify-center gap-2"
+            >
+              {submitting ? <RefreshCw size={19} className="animate-spin" /> : <LogIn size={19} />}
+              {submitting ? 'جاري تسجيل الدخول...' : 'تسجيل الدخول'}
+            </button>
+
+            <p className="text-xs text-gray-500 text-center leading-relaxed m-0">
+              بيانات الدخول تتم إدارتها من خلال Firebase Authentication.
+            </p>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export default function App() {
   const [user, setUser] = useState<User | { uid: string } | null>(null);
@@ -635,24 +785,15 @@ export default function App() {
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       if (currentUser) {
+        setError('');
         setLoading(false);
         return;
       }
 
-      if (navigator.onLine) {
-        signInAnonymously(auth as Auth).catch((err) => {
-          console.error('Auth error:', err);
-          setError('مشكلة في تسجيل الدخول لقاعدة البيانات السحابية.');
-          setSyncStatus('error');
-          setLoading(false);
-        });
-      } else {
-        // A previously authenticated anonymous session is normally restored from
-        // Firebase Auth persistence. If there is no cached session at all, there
-        // is no legitimate way to establish a new Firebase identity offline.
-        setSyncStatus('offline');
-        setLoading(false);
-      }
+      // Firebase Auth restores the previously authenticated browser session
+      // locally. If there is no session, the dedicated login page is required.
+      setSyncStatus(navigator.onLine ? 'synced' : 'offline');
+      setLoading(false);
     });
 
     return () => unsubscribe();
@@ -1046,13 +1187,29 @@ export default function App() {
     );
   };
 
+  const handleLogout = async () => {
+    if (!auth) return;
+    try {
+      await signOut(auth);
+      setError('');
+      setSyncStatus('synced');
+    } catch (err) {
+      console.error('Logout error:', err);
+      setError('تعذر تسجيل الخروج.');
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-50" dir="rtl">
         <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-emerald-600"></div>
-        <span className="mr-3 text-emerald-800 font-semibold text-lg">جاري تحميل الخريطة...</span>
+        <span className="mr-3 text-emerald-800 font-semibold text-lg">جاري التحميل...</span>
       </div>
     );
+  }
+
+  if (isFirebaseConfigured && !user) {
+    return auth ? <LoginPage authInstance={auth} /> : null;
   }
 
   return (
@@ -1138,6 +1295,18 @@ export default function App() {
           {syncStatus === 'synced' && <CheckCircle2 size={13} />}
           <span>{syncStatus === 'offline' ? 'غير متصل — محفوظ محلياً' : syncStatus === 'syncing' ? 'جاري المزامنة' : syncStatus === 'error' ? 'مشكلة في المزامنة' : 'تمت المزامنة'}</span>
         </div>
+
+        {user && 'uid' in user && user.uid !== 'local-user' && (
+          <button
+            type="button"
+            onClick={handleLogout}
+            title="تسجيل الخروج"
+            className="flex items-center gap-1.5 bg-white/10 hover:bg-white/20 border border-emerald-700 text-white text-[11px] font-bold px-2.5 py-1.5 rounded-full transition-colors"
+          >
+            <LogOut size={13} />
+            تسجيل الخروج
+          </button>
+        )}
       </header>
 
       {/* التنبيهات والأخطاء */}
