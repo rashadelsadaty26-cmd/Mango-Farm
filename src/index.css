@@ -23,15 +23,19 @@ body {
   border-radius: 8px;
 }
 
-
-/* Interactive farm map: native touch handling is disabled so React can
-   implement one-finger pan + two-finger pinch without browser scrolling. */
+/* Interactive farm map: native touch handling is disabled so the map can
+   implement smooth pan + pinch without browser scrolling. */
 .farm-map-canvas {
   touch-action: none;
   user-select: none;
   -webkit-user-select: none;
   overscroll-behavior: contain;
   -webkit-tap-highlight-color: transparent;
+  cursor: grab;
+}
+
+.farm-map-canvas:active {
+  cursor: grabbing;
 }
 
 .farm-map-canvas button,
@@ -39,17 +43,30 @@ body {
   touch-action: manipulation;
 }
 
-
-/* Keep deep zoom-out cheap without changing the schedule geometry. */
+/* The transformed map stays on its own compositing layer. Its absolute
+   origin is intentionally top-left; App.tsx handles RTL-safe viewport math. */
 .farm-map-canvas > div {
   will-change: transform;
   backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform-style: preserve-3d;
 }
 
+/* At deep zoom-out, keep the geometry and information intact but avoid
+   painting details that are not distinguishable at that scale. */
 .farm-map-low-zoom svg {
   filter: none !important;
 }
 
 .farm-map-low-zoom .farm-map-cell-label {
   display: none;
+}
+
+.farm-map-low-zoom .tree-ground-shadow,
+.farm-map-low-zoom .tree-detail-layer {
+  display: none;
+}
+
+.farm-map-low-zoom .farm-map-non-tree {
+  box-shadow: none !important;
 }
