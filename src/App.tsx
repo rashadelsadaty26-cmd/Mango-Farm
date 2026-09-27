@@ -27,15 +27,20 @@ import {
 // configured.
 // ============================================================================
 const STORAGE_KEY = 'mango_farm_grid_state_v1';
+// Keep the existing Firestore document structure/path stable.
+// Environment variables can override these public Web SDK settings in deployments,
+// but the app is connected out-of-the-box to the Firebase project supplied for
+// this application.
 const APP_ID = (import.meta.env.VITE_APP_ID as string) || 'mango-farm-app';
 
 const firebaseConfig = {
-  apiKey: import.meta.env.VITE_FIREBASE_API_KEY as string | undefined,
-  authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined,
-  projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined,
-  storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined,
-  messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined,
-  appId: import.meta.env.VITE_FIREBASE_APP_ID as string | undefined,
+  apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined) ?? 'AIzaSyB4VoL2HkQNRlKDFOH9C4A9v4LGIToN8vs',
+  authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined) ?? 'mango-farm-4b1a6.firebaseapp.com',
+  projectId: (import.meta.env.VITE_FIREBASE_PROJECT_ID as string | undefined) ?? 'mango-farm-4b1a6',
+  storageBucket: (import.meta.env.VITE_FIREBASE_STORAGE_BUCKET as string | undefined) ?? 'mango-farm-4b1a6.firebasestorage.app',
+  messagingSenderId: (import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID as string | undefined) ?? '223435623598',
+  appId: (import.meta.env.VITE_FIREBASE_APP_ID as string | undefined) ?? '1:223435623598:web:108fe63dbb32620091313f',
+  measurementId: (import.meta.env.VITE_FIREBASE_MEASUREMENT_ID as string | undefined) ?? 'G-NN2QTNW3ME',
 };
 
 const isFirebaseConfigured = Boolean(firebaseConfig.apiKey && firebaseConfig.projectId);
