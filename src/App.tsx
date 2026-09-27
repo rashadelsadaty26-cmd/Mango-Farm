@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  Save, X, Info, AlertTriangle, Bug,
+  ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
   Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -304,6 +304,24 @@ export default function App() {
     scaleRef.current = newScale;
     applyTransform();
   }, []);
+
+  const resetView = () => {
+    scaleRef.current = 1;
+    posRef.current = { x: 0, y: 0 };
+    applyTransform();
+  };
+
+  const zoomInBtn = () => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, scaleRef.current * 1.2);
+  };
+
+  const zoomOutBtn = () => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, scaleRef.current / 1.2);
+  };
 
   // ---- عجلة الفأرة/التراك باد: زووم سلس ومتناسب مع سرعة التمرير الفعلية ----
   const handleWheel = useCallback((e: WheelEvent) => {
@@ -745,6 +763,20 @@ export default function App() {
       <main className="flex-1 relative overflow-hidden bg-[#faf8f5]" style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
 
         {/* أزرار الزووم */}
+        <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
+          <button onClick={zoomInBtn} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="تكبير">
+            <ZoomIn size={20} />
+          </button>
+          <div className="w-full h-px bg-gray-200 my-1"></div>
+          <button onClick={zoomOutBtn} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="تصغير">
+            <ZoomOut size={20} />
+          </button>
+          <div className="w-full h-px bg-gray-200 my-1"></div>
+          <button onClick={resetView} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="إعادة ضبط الرؤية">
+            <Maximize size={20} />
+          </button>
+        </div>
+
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
