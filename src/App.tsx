@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
-  Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2,
+  Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2, Hash,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
@@ -264,6 +264,10 @@ export default function App() {
   // قائمة "إضافة صف/عمود" الموحّدة + تأكيد إعادة تعيين المزرعة بالكامل
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showResetConfirm, setShowResetConfirm] = useState(false);
+  // Physical rows can be marked as unnumbered (useful for a road/drainage row).
+  // These are stored by physical row index so the existing cell IDs stay unchanged.
+  const [unlabeledRows, setUnlabeledRows] = useState<number[]>([]);
+  const [showRowNumberMenu, setShowRowNumberMenu] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
 
@@ -271,6 +275,29 @@ export default function App() {
     () => Array.from({ length: rowsCount }, (_, i) => getRowLabel(i)),
     [rowsCount]
   );
+
+  // Display labels are separate from internal row labels. This lets a physical
+  // row be blank while the following numbered rows shift up to fill the gap.
+  const displayRowLabels = React.useMemo(() => {
+    const hidden = new Set(unlabeledRows);
+    let numberedIndex = 0;
+    return Array.from({ length: rowsCount }, (_, index) => {
+      if (hidden.has(index)) return '';
+      const label = getRowLabel(numberedIndex);
+      numberedIndex += 1;
+      return label;
+    });
+  }, [rowsCount, unlabeledRows]);
+
+  const toggleRowNumber = (rowIndex: number) => {
+    const exists = unlabeledRows.includes(rowIndex);
+    const next = exists
+      ? unlabeledRows.filter((i) => i !== rowIndex)
+      : [...unlabeledRows, rowIndex];
+    next.sort((a, b) => a - b);
+    setUnlabeledRows(next);
+    persistFarmState(cellsData, rowsCount, colsCount, next);
+  };
 
   // ---- تحريك وتكبير/تصغير: كل شيء عبر refs + تعديل مباشر لخاصية transform في
   // الـ DOM، بدون أي setState أثناء السحب أو الزووم، حتى لا تُعاد رسمة الشبكة
@@ -407,6 +434,7 @@ export default function App() {
           setCellsData(parsed.cells || {});
           setRowsCount(parsed.rowsCount || DEFAULT_ROWS);
           setColsCount(parsed.colsCount || DEFAULT_COLS);
+          setUnlabeledRows(Array.isArray(parsed.unlabeledRows) ? parsed.unlabeledRows.filter((n: unknown) => Number.isInteger(n)) : []);
         } else {
           setCellsData({});
         }
@@ -453,6 +481,7 @@ export default function App() {
           setCellsData(data.cells || {});
           setRowsCount(data.rowsCount || DEFAULT_ROWS);
           setColsCount(data.colsCount || DEFAULT_COLS);
+          setUnlabeledRows(Array.isArray(data.unlabeledRows) ? data.unlabeledRows.filter((n): n is number => Number.isInteger(n)) : []);
         } else {
           setCellsData({});
         }
@@ -468,12 +497,14 @@ export default function App() {
   }, [user]);
 
   // ---- حفظ موحّد للخلايا وأبعاد الشبكة: يكتب للسحابة لو متاحة، وإلا محلياً ----
-  const persistFarmState = useCallback(async (nextCells: CellsData, nextRows: number, nextCols: number) => {
+  const persistFarmState = useCallback(async (nextCells: CellsData, nextRows: number, nextCols: number, nextUnlabeledRows = unlabeledRows) => {
+    const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
     setCellsData(nextCells);
     setRowsCount(nextRows);
     setColsCount(nextCols);
+    setUnlabeledRows(cleanedUnlabeledRows);
 
-    const payload = { cells: nextCells, rowsCount: nextRows, colsCount: nextCols };
+    const payload = { cells: nextCells, rowsCount: nextRows, colsCount: nextCols, unlabeledRows: cleanedUnlabeledRows };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
       const docRef = doc(db, 'artifacts', APP_ID, 'users', user.uid, 'farm_data', 'gridState');
@@ -494,7 +525,7 @@ export default function App() {
         setError('تعذر حفظ البيانات محلياً (قد تكون مساحة التخزين ممتلئة).');
       }
     }
-  }, [user]);
+  }, [user, unlabeledRows]);
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -811,6 +842,40 @@ export default function App() {
               )}
             </div>
 
+            <div className="relative">
+              <button
+                onClick={() => setShowRowNumberMenu((v) => !v)}
+                className="flex items-center gap-1 bg-stone-700 hover:bg-stone-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
+              >
+                <Hash size={14} /> ترقيم الصفوف
+              </button>
+              {showRowNumberMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowRowNumberMenu(false)} />
+                  <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden w-[250px] max-h-[55vh] overflow-y-auto">
+                    <div className="px-3 py-2 bg-stone-50 border-b border-gray-200 text-xs text-gray-600 leading-relaxed">
+                      فعّل «بدون رقم» لأي صف طريق/مصرف. الصف التالي يأخذ رقم الصف المحذوف ويكمل الترقيم.
+                    </div>
+                    {rowLabels.map((rowLetter, rowIndex) => {
+                      const isUnlabeled = unlabeledRows.includes(rowIndex);
+                      return (
+                        <button
+                          key={`row-number-${rowLetter}`}
+                          onClick={() => toggleRowNumber(rowIndex)}
+                          className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 border-b border-gray-100 last:border-b-0"
+                        >
+                          <span>الصف {rowIndex + 1} ({rowLetter})</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                            {isUnlabeled ? 'بدون رقم' : `رقم ${displayRowLabels[rowIndex]}`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+
             <button
               onClick={() => setShowResetConfirm(true)}
               className="flex items-center gap-1 bg-red-600 hover:bg-red-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
@@ -874,16 +939,17 @@ export default function App() {
               ))}
 
               {/* صفوف المزرعة */}
-              {rowLabels.map((rowLetter) => (
+              {rowLabels.map((rowLetter, rowIndex) => (
                 <React.Fragment key={rowLetter}>
-                  {/* حرف الصف */}
+                  {/* حرف/رقم الصف المعروض؛ قد يكون فارغاً لصف طريق/مصرف */}
                   <div className="bg-[#d4c5a9] rounded flex items-center justify-center font-bold text-[#5c4e36] text-lg sticky right-0 z-10 shadow-sm">
-                    {rowLetter}
+                    {displayRowLabels[rowIndex]}
                   </div>
 
                   {/* مساحات/خلايا الصف */}
                   {[...Array(colsCount)].map((_, colIndex) => {
                     const cellId = `${rowLetter}-${colIndex + 1}`;
+                    const displayCellLabel = displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${colIndex + 1}` : `${colIndex + 1}`;
                     const cellType = cellsData[cellId]?.type || 'tree';
 
                     return (
@@ -897,7 +963,7 @@ export default function App() {
 
                         {/* رقم تعريف المساحة */}
                         <span className="farm-map-cell-label absolute -bottom-1 bg-white/90 border border-gray-200 px-1 rounded-[3px] text-[8px] font-bold text-gray-700 shadow-sm pointer-events-none z-10">
-                          {cellId}
+                          {displayCellLabel}
                         </span>
                       </div>
                     );
