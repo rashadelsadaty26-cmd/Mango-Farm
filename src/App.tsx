@@ -522,9 +522,16 @@ export default function App() {
 
   // ---- Mouse wheel: accumulate wheel bursts and feed one smooth zoom target
   // per frame. This keeps the map responsive without React renders per event.
-  const handleWheel = useCallback((e: WheelEvent) => {
+  const handleWheel = useCallback((e: WheelEvent | React.WheelEvent) => {
+    // Prevent the browser/page from scrolling while the pointer is over the farm map.
     e.preventDefault();
-    const normalizedDelta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * (containerRef.current?.clientHeight || 800) : e.deltaY;
+
+    const normalizedDelta = e.deltaMode === 1
+      ? e.deltaY * 16
+      : e.deltaMode === 2
+        ? e.deltaY * (containerRef.current?.clientHeight || 800)
+        : e.deltaY;
+
     wheelDeltaRef.current += normalizedDelta;
     wheelPointRef.current = { x: e.clientX, y: e.clientY };
 
@@ -536,8 +543,11 @@ export default function App() {
       if (!delta) return;
 
       const point = wheelPointRef.current;
-      const factor = Math.exp(-delta * 0.0012);
-      zoomAtPoint(point.x, point.y, scaleRef.current * factor);
+      const factor = Math.exp(-delta * 0.0015);
+      // Build on the latest requested scale so fast wheel bursts never get lost
+      // while the smooth animation is still catching up.
+      const baseScale = targetScaleRef.current;
+      zoomAtPoint(point.x, point.y, baseScale * factor);
     });
   }, [zoomAtPoint]);
 
@@ -545,7 +555,15 @@ export default function App() {
     const container = containerRef.current;
     if (!container) return;
 
-    container.addEventListener('wheel', handleWheel, { passive: false });
+    // Capture-phase native listener is intentional: it reliably receives mouse
+    // wheel events even when a child SVG/cell stops propagation. React state is
+    // not involved in this high-frequency path.
+    const wheelListener = (e: WheelEvent) => {
+      const target = e.target as Node | null;
+      if (!target || !container.contains(target)) return;
+      handleWheel(e);
+    };
+    document.addEventListener('wheel', wheelListener, { passive: false, capture: true });
     measureMap();
 
     const resizeObserver = new ResizeObserver(() => {
@@ -568,7 +586,7 @@ export default function App() {
     });
 
     return () => {
-      container.removeEventListener('wheel', handleWheel);
+      document.removeEventListener('wheel', wheelListener, { capture: true });
       resizeObserver.disconnect();
       cancelAnimationFrame(initialFrame);
       if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
