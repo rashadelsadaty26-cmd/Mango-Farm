@@ -279,15 +279,36 @@ export default function App() {
   const scaleRef = useRef(1);
   const posRef = useRef({ x: 0, y: 0 });
   const panZoomRef = useRef<HTMLDivElement>(null);
+  const farmGridRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
+  const transformFrameRef = useRef<number | null>(null);
+
+  // Keep the map large enough to cover the whole viewport. This prevents a
+  // white/empty area from appearing when zooming out. The minimum is based on
+  // the actual schedule size, so it also adapts when rows/columns are added.
+  const getCoverScale = useCallback(() => {
+    const container = containerRef.current;
+    const grid = farmGridRef.current;
+    if (!container || !grid) return 0.15;
+    const width = grid.offsetWidth || 1;
+    const height = grid.offsetHeight || 1;
+    return Math.max(container.clientWidth / width, container.clientHeight / height);
+  }, []);
 
   const applyTransform = () => {
-    if (panZoomRef.current) {
-      panZoomRef.current.style.transform = `translate(${posRef.current.x}px, ${posRef.current.y}px) scale(${scaleRef.current})`;
-    }
+    if (transformFrameRef.current !== null) return;
+    transformFrameRef.current = requestAnimationFrame(() => {
+      transformFrameRef.current = null;
+      if (panZoomRef.current) {
+        panZoomRef.current.style.transform = `translate3d(${posRef.current.x}px, ${posRef.current.y}px, 0) scale(${scaleRef.current})`;
+      }
+    });
   };
 
-  const clampScale = (s: number) => Math.min(Math.max(0.15, s), 3);
+  const clampScale = useCallback((s: number) => {
+    const minScale = Math.min(getCoverScale(), 3);
+    return Math.min(Math.max(minScale, s), 3);
+  }, [getCoverScale]);
 
   // تكبير/تصغير مع تثبيت النقطة الموجودة تحت المؤشر/الإصبع في مكانها (بدل
   // التكبير دائماً من زاوية الشبكة العلوية، وهو ما كان يسبب "قفز" المحتوى).
@@ -306,8 +327,20 @@ export default function App() {
   }, []);
 
   const resetView = () => {
-    scaleRef.current = 1;
-    posRef.current = { x: 0, y: 0 };
+    const scale = clampScale(getCoverScale());
+    const container = containerRef.current;
+    const grid = farmGridRef.current;
+    scaleRef.current = scale;
+    if (container && grid) {
+      const scaledW = grid.offsetWidth * scale;
+      const scaledH = grid.offsetHeight * scale;
+      posRef.current = {
+        x: (container.clientWidth - scaledW) / 2,
+        y: (container.clientHeight - scaledH) / 2,
+      };
+    } else {
+      posRef.current = { x: 0, y: 0 };
+    }
     applyTransform();
   };
 
@@ -326,9 +359,34 @@ export default function App() {
   // ---- عجلة الفأرة/التراك باد: زووم سلس ومتناسب مع سرعة التمرير الفعلية ----
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    const factor = Math.exp(-e.deltaY * 0.0015);
+    // Mouse-wheel zoom: keep it responsive but avoid doing more work than the
+    // browser can paint. Direct DOM transforms + requestAnimationFrame keep
+    // the thousands of schedule cells out of React's render cycle.
+    const factor = Math.exp(-e.deltaY * 0.0018);
     zoomAtPoint(e.clientX, e.clientY, scaleRef.current * factor);
   }, [zoomAtPoint]);
+
+  // Recalculate the zoom floor when the viewport or schedule dimensions change.
+  useEffect(() => {
+    const updateZoomFloor = () => {
+      const minScale = getCoverScale();
+      if (scaleRef.current < minScale) {
+        scaleRef.current = minScale;
+        applyTransform();
+      }
+    };
+    updateZoomFloor();
+    window.addEventListener('resize', updateZoomFloor);
+    return () => window.removeEventListener('resize', updateZoomFloor);
+  }, [rowsCount, colsCount, getCoverScale]);
+
+  // Start already fitted to the schedule, so the page never opens with a
+  // large empty area around it.
+  useEffect(() => {
+    if (!loading) {
+      requestAnimationFrame(() => resetView());
+    }
+  }, [loading]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -760,7 +818,7 @@ export default function App() {
       )}
 
       {/* منطقة الخريطة */}
-      <main className="flex-1 relative overflow-auto bg-white">
+      <main className="flex-1 relative overflow-hidden bg-[#f0eadd]">
 
         {/* أزرار الزووم */}
         <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
@@ -788,11 +846,12 @@ export default function App() {
         >
           <div
             ref={panZoomRef}
-            style={{ transformOrigin: '0 0' }}
-            className="inline-block p-4"
+            style={{ transformOrigin: '0 0', willChange: 'transform' }}
+            className="inline-block"
           >
             {/* أرضية المزرعة والشبكة */}
             <div
+              ref={farmGridRef}
               className="bg-[#f0eadd] p-6 rounded-xl shadow-2xl border-[6px] border-[#d4c5a9]"
               style={{
                 display: 'grid',
