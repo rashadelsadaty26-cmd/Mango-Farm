@@ -24,7 +24,9 @@ body {
 }
 
 /* Interactive farm map: native touch handling is disabled so the map can
-   implement smooth pan + pinch without browser scrolling. */
+   implement smooth pan + pinch without browser scrolling. The actual wheel
+   listener is attached natively (non-passive) in App.tsx so preventDefault
+   really stops page/elastic scrolling while the pointer is over the map. */
 .farm-map-canvas {
   touch-action: none;
   user-select: none;
@@ -32,6 +34,7 @@ body {
   overscroll-behavior: contain;
   -webkit-tap-highlight-color: transparent;
   cursor: grab;
+  overflow: hidden;
 }
 
 .farm-map-canvas:active {
@@ -41,6 +44,11 @@ body {
 .farm-map-canvas button,
 .farm-map-canvas [role="button"] {
   touch-action: manipulation;
+}
+
+.farm-map-canvas,
+.farm-map-canvas * {
+  -webkit-user-drag: none;
 }
 
 /* The transformed map stays on its own compositing layer. Its absolute
@@ -58,17 +66,12 @@ body {
   filter: none !important;
 }
 
-.farm-map-low-zoom .farm-map-cell-label {
-  display: none;
-}
-
-.farm-map-low-zoom .tree-ground-shadow,
 .farm-map-low-zoom .tree-detail-layer {
   display: none;
 }
 
-.farm-map-low-zoom .farm-map-non-tree {
-  box-shadow: none !important;
+.farm-map-low-zoom .farm-map-cell-label {
+  display: none;
 }
 
 /* Crisp, natural-looking mango trees. Keep the artwork vector/flat so it stays
@@ -103,16 +106,19 @@ body {
   z-index: 10;
 }
 
-.farm-flat-empty-tree {
-  width: 28%;
-  height: 28%;
-  min-width: 10px;
-  min-height: 10px;
-  border: 2px solid #cbd5d1;
-  border-radius: 50%;
-  opacity: 0.72;
+/* Small seedling shown in every empty (unplanted) cell — deliberately much
+   smaller and plainer than a full mango tree so the two states are never
+   ambiguous at a glance. Its secondary leaf reuses .tree-detail-layer so it
+   fades out at the same low-zoom threshold as a tree's internal shading,
+   leaving a simple sprout silhouette that stays visible at any zoom. */
+.farm-seedling {
+  width: 30%;
+  height: 34%;
+  display: block;
   align-self: center;
-  margin-bottom: 30%;
+  margin-bottom: 16%;
+  overflow: visible;
+  shape-rendering: geometricPrecision;
 }
 
 /* Infrastructure: the cell itself and its fill are intentionally square. The
@@ -153,57 +159,10 @@ body {
   display: none;
 }
 
-/* Special cells can slightly overlap the grid gap so there is never a white
-   line between two adjacent matching infrastructure cells. */
-.farm-map-infrastructure-cell[data-infra-kind="water"] .farm-map-infrastructure-fill,
-.farm-map-infrastructure-cell[data-infra-kind="drainage"] .farm-map-infrastructure-fill,
-.farm-map-infrastructure-cell[data-infra-kind="road"] .farm-map-infrastructure-fill,
-.farm-map-infrastructure-cell[data-infra-kind="gap"] .farm-map-infrastructure-fill {
-  inset: -3px;
-}
-
-/* Low zoom: hide only the optional SVG detail paths. The main tree silhouette
-   stays visible, keeping the farm readable while dramatically reducing paint work. */
-.farm-map-low-zoom .tree-detail-layer {
-  display: none;
-}
-
-.farm-map-low-zoom .farm-map-cell-label {
-  display: none;
-}
-
-.farm-map-low-zoom .farm-map-non-tree {
-  box-shadow: none !important;
-}
-
-/* Wheel/pointer map surface */
-.farm-map-canvas {
-  touch-action: none;
-  user-select: none;
-  -webkit-user-select: none;
-  overscroll-behavior: contain;
-  -webkit-tap-highlight-color: transparent;
-  cursor: grab;
-  overflow: hidden;
-}
-
-.farm-map-canvas:active {
-  cursor: grabbing;
-}
-
-.farm-map-canvas button,
-.farm-map-canvas [role="button"] {
-  touch-action: manipulation;
-}
-
-.farm-map-canvas > div {
-  will-change: transform;
-  backface-visibility: hidden;
-  -webkit-backface-visibility: hidden;
-  transform-style: preserve-3d;
-}
-
-.farm-map-canvas,
-.farm-map-canvas * {
-  -webkit-user-drag: none;
+/* Selection: a crisp outline only — no recolor, no scale, no layout shift, so
+   neighboring cells never move when a cell is selected. */
+.farm-cell-selected {
+  outline: 2px solid #0d9488;
+  outline-offset: -2px;
+  z-index: 6;
 }

@@ -81,56 +81,12 @@ interface CellData {
 
 type CellsData = Record<string, CellData>;
 
-type Connections = { up: boolean; down: boolean; left: boolean; right: boolean };
-
 const CELL_TYPE_OPTIONS: { type: CellType; emoji: string; label: string }[] = [
   { type: 'tree', emoji: '🌳', label: 'شجرة' },
   { type: 'water_canal', emoji: '💧', label: 'مروى' },
   { type: 'drainage', emoji: '🕳️', label: 'مصرف' },
   { type: 'road', emoji: '🛣️', label: 'طريق' },
 ];
-
-// ---- مساعد: إيجاد رقم خلية الجار في اتجاه معيّن (لأغراض ربط رسومات المصرف) ----
-function getNeighborId(
-  cellId: string,
-  dir: 'up' | 'down' | 'left' | 'right',
-  rowLabels: string[],
-  colsCount: number
-): string | null {
-  const dashIdx = cellId.lastIndexOf('-');
-  const rowLabel = cellId.slice(0, dashIdx);
-  const col = parseInt(cellId.slice(dashIdx + 1), 10);
-  const rowIdx = rowLabels.indexOf(rowLabel);
-  if (rowIdx === -1 || Number.isNaN(col)) return null;
-
-  let newRowIdx = rowIdx;
-  let newCol = col;
-  if (dir === 'up') newRowIdx -= 1;
-  else if (dir === 'down') newRowIdx += 1;
-  else if (dir === 'left') newCol -= 1;
-  else if (dir === 'right') newCol += 1;
-
-  if (newRowIdx < 0 || newRowIdx >= rowLabels.length || newCol < 1 || newCol > colsCount) return null;
-  return `${rowLabels[newRowIdx]}-${newCol}`;
-}
-
-function getConnections(
-  cellId: string,
-  type: CellType,
-  cellsData: CellsData,
-  rowLabels: string[],
-  colsCount: number
-): Connections {
-  const dirs: Array<'up' | 'down' | 'left' | 'right'> = ['up', 'down', 'left', 'right'];
-  const result: Connections = { up: false, down: false, left: false, right: false };
-  for (const dir of dirs) {
-    const neighborId = getNeighborId(cellId, dir, rowLabels, colsCount);
-    if (neighborId && cellsData[neighborId]?.type === type) {
-      result[dir] = true;
-    }
-  }
-  return result;
-}
 
 // ============================================================================
 // Lightweight natural farm graphics.
@@ -148,10 +104,32 @@ const MangoTreeSVG = ({
   isEmpty?: boolean;
 }) => {
   if (isEmpty) {
+    // Small, clearly-secondary seedling for a plot with no tree yet. The stem
+    // + primary leaf pair stay visible at any zoom (a single flat path), while
+    // the extra inner leaf reuses .tree-detail-layer so it fades out at the
+    // same low-zoom threshold as the mango trees' internal shading.
     return (
-      <div className="farm-flat-empty-tree" aria-hidden="true">
-        <span />
-      </div>
+      <svg
+        className="farm-seedling"
+        viewBox="0 0 40 40"
+        role="img"
+        aria-hidden="true"
+        preserveAspectRatio="xMidYMid meet"
+      >
+        <path
+          d="M20 37 L20 21 C20 21 12 20 10 12 C17 11 20 16 20 21 C20 16 23 11 30 12 C28 20 20 21 20 21 Z"
+          fill="#6b9c4f"
+          stroke="#4f7a3a"
+          strokeWidth="1"
+          strokeLinejoin="round"
+        />
+        <path
+          className="tree-detail-layer"
+          d="M20 27 C17 26 15 23 15 19 C18 19 20 23 20 27 Z"
+          fill="#8fbf6c"
+          opacity="0.85"
+        />
+      </svg>
     );
   }
 
@@ -213,18 +191,6 @@ const MangoTreeSVG = ({
     </svg>
   );
 };
-
-const ConnectedWaterCanalSVG = (_props: { connections: Connections }) => (
-  <div className="farm-flat-infra farm-flat-water" aria-label="مروى" />
-);
-
-const ConnectedDrainageSVG = (_props: { connections: Connections }) => (
-  <div className="farm-flat-infra farm-flat-drainage" aria-label="مصرف" />
-);
-
-const ConnectedRoadSVG = (_props: { connections: Connections }) => (
-  <div className="farm-flat-infra farm-flat-road" aria-label="طريق" />
-);
 
 export default function App() {
   const [user, setUser] = useState<User | { uid: string } | null>(null);
@@ -532,6 +498,20 @@ export default function App() {
       zoomAtPoint(point.x, point.y, baseScale * factor);
     });
   }, [zoomAtPoint]);
+
+  // React attaches JSX wheel handlers as passive listeners, so calling
+  // e.preventDefault() from onWheel/onWheelCapture is silently ignored by the
+  // browser (with a console warning) and never actually stops page/elastic
+  // scrolling. Attaching the same handler natively with { passive: false }
+  // makes preventDefault work for real, directly on the map viewport and
+  // ahead of any child cell/SVG element via the capture phase.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const listener = (e: WheelEvent) => handleWheel(e);
+    container.addEventListener('wheel', listener, { passive: false, capture: true });
+    return () => container.removeEventListener('wheel', listener, { capture: true });
+  }, [handleWheel]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -925,6 +905,13 @@ export default function App() {
     );
   };
 
+  // The one cell currently "selected" — being edited via the type picker in
+  // edit mode, or whose tree modal is open in view mode — gets a plain outline
+  // on the map. No recolor, no resize, so neighboring cells never shift.
+  const activeCellId = mode === 'edit'
+    ? typePicker?.cellId ?? null
+    : (isModalOpen ? selectedTree : null);
+
   if (loading) {
     return (
       <div className="flex h-screen items-center justify-center bg-gray-50" dir="rtl">
@@ -1168,7 +1155,6 @@ export default function App() {
         <div
           ref={containerRef}
           className={`farm-map-canvas w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`} style={{ direction: 'ltr' }}
-          onWheelCapture={handleWheel}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -1228,7 +1214,7 @@ export default function App() {
                       <div
                         key={cellId}
                         data-cell-id={cellId}
-                        className={`farm-map-cell relative w-full h-full flex items-center justify-center ${isInfrastructure ? 'farm-map-infrastructure-cell' : ''} ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
+                        className={`farm-map-cell relative w-full h-full flex items-center justify-center ${isInfrastructure ? 'farm-map-infrastructure-cell' : ''} ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')} ${activeCellId === cellId ? 'farm-cell-selected' : ''}`}
                         data-infra-kind={isInfrastructure ? infrastructureKind : undefined}
                         title={mode === 'edit' ? `تعديل: ${cellId}` : (cellType === 'tree' ? `شجرة ${cellId}` : '')}
                       >
