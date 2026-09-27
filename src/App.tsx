@@ -1214,6 +1214,7 @@ export default function App() {
                           {displayCellLabel}
                         </span>
                       </div>
+                    );
                   })}
                 </React.Fragment>
               ))}
