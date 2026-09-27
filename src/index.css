@@ -40,16 +40,10 @@ body {
 }
 
 
-/* Performance safeguards for deep zoom-out. The farm contains 1,800 cells;
-   expensive SVG filters and tiny labels add a large compositing cost when the
-   entire map is visible at once. At low zoom the geometry stays in place while
-   visual-only details are simplified. */
-.farm-map-canvas {
-  contain: layout paint;
-}
-
-.farm-map-low-zoom {
-  contain: layout paint;
+/* Keep deep zoom-out cheap without changing the schedule geometry. */
+.farm-map-canvas > div {
+  will-change: transform;
+  backface-visibility: hidden;
 }
 
 .farm-map-low-zoom svg {
@@ -58,8 +52,4 @@ body {
 
 .farm-map-low-zoom .farm-map-cell-label {
   display: none;
-}
-
-.farm-map-low-zoom .farm-map-low-zoom-tree {
-  box-shadow: none !important;
 }
