@@ -267,7 +267,9 @@ export default function App() {
   // Physical rows can be marked as unnumbered (useful for a road/drainage row).
   // These are stored by physical row index so the existing cell IDs stay unchanged.
   const [unlabeledRows, setUnlabeledRows] = useState<number[]>([]);
+  const [unlabeledCols, setUnlabeledCols] = useState<number[]>([]);
   const [showRowNumberMenu, setShowRowNumberMenu] = useState(false);
+  const [showColNumberMenu, setShowColNumberMenu] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
 
@@ -297,6 +299,29 @@ export default function App() {
     next.sort((a, b) => a - b);
     setUnlabeledRows(next);
     persistFarmState(cellsData, rowsCount, colsCount, next);
+  };
+
+  // Display column numbers are separate from physical column indexes so a
+  // physical column can stay blank while the following numbered columns shift
+  // left to continue the visible numbering without changing internal cell IDs.
+  const displayColLabels = React.useMemo(() => {
+    const hidden = new Set(unlabeledCols);
+    let numberedIndex = 0;
+    return Array.from({ length: colsCount }, (_, index) => {
+      if (hidden.has(index)) return '';
+      numberedIndex += 1;
+      return String(numberedIndex);
+    });
+  }, [colsCount, unlabeledCols]);
+
+  const toggleColNumber = (colIndex: number) => {
+    const exists = unlabeledCols.includes(colIndex);
+    const next = exists
+      ? unlabeledCols.filter((i) => i !== colIndex)
+      : [...unlabeledCols, colIndex];
+    next.sort((a, b) => a - b);
+    setUnlabeledCols(next);
+    persistFarmState(cellsData, rowsCount, colsCount, unlabeledRows, next);
   };
 
   // ---- تحريك وتكبير/تصغير: كل شيء عبر refs + تعديل مباشر لخاصية transform في
@@ -435,6 +460,7 @@ export default function App() {
           setRowsCount(parsed.rowsCount || DEFAULT_ROWS);
           setColsCount(parsed.colsCount || DEFAULT_COLS);
           setUnlabeledRows(Array.isArray(parsed.unlabeledRows) ? parsed.unlabeledRows.filter((n: unknown) => Number.isInteger(n)) : []);
+          setUnlabeledCols(Array.isArray(parsed.unlabeledCols) ? parsed.unlabeledCols.filter((n: unknown) => Number.isInteger(n)) : []);
         } else {
           setCellsData({});
         }
@@ -482,6 +508,7 @@ export default function App() {
           setRowsCount(data.rowsCount || DEFAULT_ROWS);
           setColsCount(data.colsCount || DEFAULT_COLS);
           setUnlabeledRows(Array.isArray(data.unlabeledRows) ? data.unlabeledRows.filter((n): n is number => Number.isInteger(n)) : []);
+          setUnlabeledCols(Array.isArray(data.unlabeledCols) ? data.unlabeledCols.filter((n): n is number => Number.isInteger(n)) : []);
         } else {
           setCellsData({});
         }
@@ -497,14 +524,28 @@ export default function App() {
   }, [user]);
 
   // ---- حفظ موحّد للخلايا وأبعاد الشبكة: يكتب للسحابة لو متاحة، وإلا محلياً ----
-  const persistFarmState = useCallback(async (nextCells: CellsData, nextRows: number, nextCols: number, nextUnlabeledRows = unlabeledRows) => {
+  const persistFarmState = useCallback(async (
+    nextCells: CellsData,
+    nextRows: number,
+    nextCols: number,
+    nextUnlabeledRows = unlabeledRows,
+    nextUnlabeledCols = unlabeledCols,
+  ) => {
     const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
+    const cleanedUnlabeledCols = nextUnlabeledCols.filter((index) => Number.isInteger(index) && index >= 0 && index < nextCols);
     setCellsData(nextCells);
     setRowsCount(nextRows);
     setColsCount(nextCols);
     setUnlabeledRows(cleanedUnlabeledRows);
+    setUnlabeledCols(cleanedUnlabeledCols);
 
-    const payload = { cells: nextCells, rowsCount: nextRows, colsCount: nextCols, unlabeledRows: cleanedUnlabeledRows };
+    const payload = {
+      cells: nextCells,
+      rowsCount: nextRows,
+      colsCount: nextCols,
+      unlabeledRows: cleanedUnlabeledRows,
+      unlabeledCols: cleanedUnlabeledCols,
+    };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
       const docRef = doc(db, 'artifacts', APP_ID, 'users', user.uid, 'farm_data', 'gridState');
@@ -525,7 +566,7 @@ export default function App() {
         setError('تعذر حفظ البيانات محلياً (قد تكون مساحة التخزين ممتلئة).');
       }
     }
-  }, [user, unlabeledRows]);
+  }, [user, unlabeledRows, unlabeledCols]);
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -844,6 +885,40 @@ export default function App() {
 
             <div className="relative">
               <button
+                onClick={() => setShowColNumberMenu((v) => !v)}
+                className="flex items-center gap-1 bg-stone-600 hover:bg-stone-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
+              >
+                <Hash size={14} /> ترقيم الأعمدة
+              </button>
+              {showColNumberMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowColNumberMenu(false)} />
+                  <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden w-[250px] max-h-[55vh] overflow-y-auto">
+                    <div className="px-3 py-2 bg-stone-50 border-b border-gray-200 text-xs text-gray-600 leading-relaxed">
+                      فعّل «بدون رقم» لأي عمود طريق/مصرف. العمود التالي يأخذ رقم العمود المحذوف ويكمل الترقيم.
+                    </div>
+                    {Array.from({ length: colsCount }, (_, colIndex) => {
+                      const isUnlabeled = unlabeledCols.includes(colIndex);
+                      return (
+                        <button
+                          key={`col-number-${colIndex + 1}`}
+                          onClick={() => toggleColNumber(colIndex)}
+                          className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 border-b border-gray-100 last:border-b-0"
+                        >
+                          <span>العمود {colIndex + 1}</span>
+                          <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
+                            {isUnlabeled ? 'بدون رقم' : `رقم ${displayColLabels[colIndex]}`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="relative">
+              <button
                 onClick={() => setShowRowNumberMenu((v) => !v)}
                 className="flex items-center gap-1 bg-stone-700 hover:bg-stone-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
               >
@@ -934,7 +1009,7 @@ export default function App() {
               </div>
               {[...Array(colsCount)].map((_, colIndex) => (
                 <div key={`header-${colIndex}`} className="bg-[#e6ddca] rounded flex items-center justify-center font-bold text-[#5c4e36] text-sm mb-2 shadow-sm">
-                  {colIndex + 1}
+                  {displayColLabels[colIndex]}
                 </div>
               ))}
 
@@ -949,7 +1024,9 @@ export default function App() {
                   {/* مساحات/خلايا الصف */}
                   {[...Array(colsCount)].map((_, colIndex) => {
                     const cellId = `${rowLetter}-${colIndex + 1}`;
-                    const displayCellLabel = displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${colIndex + 1}` : `${colIndex + 1}`;
+                    const displayCellLabel = displayColLabels[colIndex]
+                      ? (displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${displayColLabels[colIndex]}` : displayColLabels[colIndex])
+                      : (displayRowLabels[rowIndex] ? displayRowLabels[rowIndex] : '');
                     const cellType = cellsData[cellId]?.type || 'tree';
 
                     return (
