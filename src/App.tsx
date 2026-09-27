@@ -156,7 +156,8 @@ const MangoTreeSVG = ({
   }
 
   const canopy = fill || '#159447';
-  const canopyDark = fill === '#d97706' ? '#b45309' : fill === '#dc2626' ? '#b91c1c' : '#0f7a3a';
+  const canopyDark = fill === '#d97706' ? '#a95f04' : fill === '#dc2626' ? '#b91c1c' : '#0f6f38';
+  const outline = fill === '#dc2626' ? '#8f1d1d' : fill === '#d97706' ? '#8d5105' : '#0a5c2e';
 
   return (
     <svg
@@ -166,20 +167,49 @@ const MangoTreeSVG = ({
       aria-hidden="true"
       preserveAspectRatio="xMidYMid meet"
     >
+      {/* One organic silhouette keeps the tree recognizable and lightweight. */}
       <path
-        d="M49 83 C47 73 45 66 45 58 C37 57 30 53 29 46 C27 38 33 31 41 31 C43 22 50 16 59 18 C68 13 79 19 80 28 C88 30 93 37 91 45 C89 53 82 57 74 57 C71 64 67 71 66 83 Z"
+        d="M48 84 C48 76 46 69 44 63 C37 63 31 59 29 53 C26 47 30 41 36 39 C34 32 39 25 46 24 C48 17 55 13 62 17 C69 13 78 17 80 24 C87 25 92 31 91 38 C97 43 96 51 91 56 C87 61 81 63 74 61 C72 69 67 76 66 84 Z"
         fill={canopy}
+        stroke={outline}
+        strokeWidth="1.5"
+        strokeLinejoin="round"
       />
+
+      {/* Subtle internal leaf masses: crisp, flat vector shapes, no filters. */}
       <path
-        d="M42 38 C47 28 56 24 65 26 C70 27 74 31 76 35 C67 32 58 34 51 40 C47 44 44 48 40 50 C36 47 36 42 42 38 Z"
+        className="tree-detail-layer"
+        d="M38 42 C42 31 51 27 60 28 C68 28 75 32 78 38 C68 34 59 36 52 42 C47 46 43 50 38 50 C35 48 35 45 38 42 Z"
         fill={canopyDark}
         opacity="0.22"
       />
       <path
-        d="M48 82 C50 70 51 61 54 54 C57 51 61 51 63 54 C60 64 59 73 61 83 Z"
-        fill="#713f12"
+        className="tree-detail-layer"
+        d="M62 22 C68 19 74 21 77 26 C70 25 66 27 61 30 C59 27 59 24 62 22 Z"
+        fill="#ffffff"
+        opacity="0.10"
       />
-      {isDiseased && <circle cx="78" cy="41" r="4.5" fill="#7f1d1d" />}
+
+      {/* Small tapered trunk. */}
+      <path
+        d="M47 84 C50 72 51 64 53 55 C55 52 60 52 63 55 C60 65 59 74 61 84 Z"
+        fill="#7a4a1c"
+        stroke="#633b15"
+        strokeWidth="0.9"
+        strokeLinejoin="round"
+      />
+
+      {isDiseased && (
+        <circle
+          className="tree-detail-layer"
+          cx="78"
+          cy="39"
+          r="4.2"
+          fill="#7f1d1d"
+          stroke="#ffffff"
+          strokeWidth="1.3"
+        />
+      )}
     </svg>
   );
 };
@@ -884,11 +914,11 @@ export default function App() {
     return (
       <div className="relative w-full h-full flex flex-col items-center justify-end">
         {!statusData.isEmpty && (
-          <div className={`absolute top-1 right-1 p-0.5 rounded-full bg-white z-10 border border-gray-200 ${statusData.iconColor}`}>
+          <div className={`farm-tree-status-badge ${statusData.iconColor}`} title="حالة الشجرة">
             {statusData.icon}
           </div>
         )}
-        <div className="w-full h-[92%]">
+        <div className="farm-tree-visual w-full h-[95%]">
           <MangoTreeSVG fill={statusData.color} isDiseased={statusData.isDiseased} isEmpty={statusData.isEmpty} />
         </div>
       </div>
@@ -1199,6 +1229,7 @@ export default function App() {
                         key={cellId}
                         data-cell-id={cellId}
                         className={`farm-map-cell relative w-full h-full flex items-center justify-center ${isInfrastructure ? 'farm-map-infrastructure-cell' : ''} ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
+                        data-infra-kind={isInfrastructure ? infrastructureKind : undefined}
                         title={mode === 'edit' ? `تعديل: ${cellId}` : (cellType === 'tree' ? `شجرة ${cellId}` : '')}
                       >
                         <div

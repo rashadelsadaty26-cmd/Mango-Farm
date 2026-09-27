@@ -71,67 +71,109 @@ body {
   box-shadow: none !important;
 }
 
-/* Lightweight, natural-looking mango trees.
-   One small SVG silhouette per tree; no filters, drop shadows or animations. */
+/* Crisp, natural-looking mango trees. Keep the artwork vector/flat so it stays
+   sharp at any zoom without bringing back the expensive photo-like rendering. */
 .farm-natural-tree {
-  width: 82%;
-  height: 94%;
+  width: 94%;
+  height: 97%;
   display: block;
   overflow: visible;
+  shape-rendering: geometricPrecision;
+}
+
+.farm-tree-visual {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.farm-tree-status-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(255,255,255,.96);
+  border: 1px solid rgba(148,163,184,.45);
+  box-shadow: 0 1px 2px rgba(15,23,42,.10);
+  z-index: 10;
 }
 
 .farm-flat-empty-tree {
-  width: 34%;
-  height: 34%;
+  width: 28%;
+  height: 28%;
+  min-width: 10px;
+  min-height: 10px;
   border: 2px solid #cbd5d1;
   border-radius: 50%;
-  opacity: 0.7;
+  opacity: 0.72;
   align-self: center;
-  margin-bottom: 28%;
+  margin-bottom: 30%;
 }
 
-.farm-flat-tree-canopy {
-  border: 0;
-}
-
-/* Full-bleed infrastructure: the fill extends into the 4px grid gap. Since
-   each neighboring infrastructure cell extends by 2px, matching cells meet
-   exactly and read as one continuous road/drain/water strip. */
+/* Infrastructure: the cell itself and its fill are intentionally square. The
+   fill extends beyond every edge so neighboring infrastructure cells become one
+   continuous road/drain/water surface with no visible grid seam. */
 .farm-map-infrastructure-cell {
   overflow: visible !important;
-  z-index: 1;
+  z-index: 4;
+  isolation: isolate;
 }
 
 .farm-map-infrastructure-fill {
   position: absolute;
-  inset: -2px;
+  inset: -3px;
   z-index: 0;
-  border-radius: 0;
+  border-radius: 0 !important;
   pointer-events: none;
 }
 
-.farm-infra-kind-water { background: #3b82f6; }
-.farm-infra-kind-drainage { background: #292524; }
-.farm-infra-kind-road { background: #cbd5e1; }
-.farm-infra-kind-gap { background: #f1f5f9; }
+.farm-infra-kind-water {
+  background: #78bcd1;
+  background-image: repeating-linear-gradient(0deg, rgba(255,255,255,.10) 0 2px, transparent 2px 7px);
+}
+
+.farm-infra-kind-drainage {
+  background: #5d7c72;
+}
+
+.farm-infra-kind-road {
+  background: #c9bda8;
+}
+
+.farm-infra-kind-gap {
+  background: #ebe7dd;
+}
 
 .farm-map-infrastructure-cell .farm-map-cell-label {
   display: none;
 }
 
-/* Keep the visual layer cheap when zoomed far out. The tree SVG remains one
-   small silhouette, while labels and status badges disappear. */
-.farm-map-low-zoom .farm-map-cell-label,
-.farm-map-low-zoom .farm-natural-tree + * {
+/* Special cells can slightly overlap the grid gap so there is never a white
+   line between two adjacent matching infrastructure cells. */
+.farm-map-infrastructure-cell[data-infra-kind="water"] .farm-map-infrastructure-fill,
+.farm-map-infrastructure-cell[data-infra-kind="drainage"] .farm-map-infrastructure-fill,
+.farm-map-infrastructure-cell[data-infra-kind="road"] .farm-map-infrastructure-fill,
+.farm-map-infrastructure-cell[data-infra-kind="gap"] .farm-map-infrastructure-fill {
+  inset: -3px;
+}
+
+/* Low zoom: hide only the optional SVG detail paths. The main tree silhouette
+   stays visible, keeping the farm readable while dramatically reducing paint work. */
+.farm-map-low-zoom .tree-detail-layer {
   display: none;
 }
 
-.farm-map-low-zoom .farm-map-infrastructure-fill {
-  inset: -2px;
+.farm-map-low-zoom .farm-map-cell-label {
+  display: none;
 }
 
-.farm-map-low-zoom svg {
-  filter: none !important;
+.farm-map-low-zoom .farm-map-non-tree {
+  box-shadow: none !important;
 }
 
 /* Wheel/pointer map surface */
