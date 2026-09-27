@@ -2,19 +2,29 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
   Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2, Hash,
+  WifiOff, RefreshCw, CheckCircle2, AlertCircle,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
   getAuth, signInAnonymously, onAuthStateChanged, type Auth, type User,
 } from 'firebase/auth';
 import {
-  getFirestore, doc, setDoc, onSnapshot, type Firestore,
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+  doc,
+  setDoc,
+  updateDoc,
+  deleteField,
+  onSnapshot,
+  type Firestore,
 } from 'firebase/firestore';
 
 // ============================================================================
-// الإعدادات والتخزين: يعمل التطبيق محلياً (localStorage) افتراضياً بدون أي
-// إعداد، ولو تم ضبط متغيرات بيئة Firebase (VITE_FIREBASE_*) في Vercel يتحول
-// تلقائياً للمزامنة السحابية. لا حاجة لتعديل الكود عند إضافة Firebase لاحقاً.
+// Firebase is the source of truth whenever it is configured. Firestore's native
+// IndexedDB persistent cache is the offline database; localStorage remains only
+// as the existing fallback for environments where Firebase is intentionally not
+// configured.
 // ============================================================================
 const STORAGE_KEY = 'mango_farm_grid_state_v1';
 const APP_ID = (import.meta.env.VITE_APP_ID as string) || 'mango-farm-app';
@@ -35,7 +45,11 @@ let db: Firestore | undefined;
 if (isFirebaseConfigured) {
   const app = initializeApp(firebaseConfig);
   auth = getAuth(app);
-  db = getFirestore(app);
+  db = initializeFirestore(app, {
+    localCache: persistentLocalCache({
+      tabManager: persistentMultipleTabManager(),
+    }),
+  });
 }
 
 const DEFAULT_ROWS = 30;
@@ -233,6 +247,9 @@ export default function App() {
   const [colsCount, setColsCount] = useState(DEFAULT_COLS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [syncStatus, setSyncStatus] = useState<'offline' | 'syncing' | 'synced' | 'error'>(
+    isFirebaseConfigured && typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing'
+  );
 
   // أوضاع التطبيق: 'view' (لإدارة الأشجار) | 'edit' (لتخطيط المزرعة والممرات)
   const [mode, setMode] = useState<'view' | 'edit'>('view');
@@ -257,6 +274,7 @@ export default function App() {
   const [showColNumberMenu, setShowColNumberMenu] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
+  const farmDocumentExistsRef = useRef(false);
 
   const rowLabels = React.useMemo(
     () => Array.from({ length: rowsCount }, (_, i) => getRowLabel(i)),
@@ -603,25 +621,33 @@ export default function App() {
         console.error('Failed to read local storage', err);
         setError('تعذر قراءة البيانات المحفوظة محلياً.');
       }
+      setSyncStatus('synced');
       setUser({ uid: 'local-user' });
       setLoading(false);
       return;
     }
 
-    const initAuth = async () => {
-      try {
-        await signInAnonymously(auth as Auth);
-      } catch (err) {
-        console.error('Auth error:', err);
-        setError('مشكلة في تسجيل الدخول لقاعدة البيانات السحابية.');
-        setLoading(false);
-      }
-    };
-    initAuth();
-
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
-      if (!currentUser) setLoading(false);
+      if (currentUser) {
+        setLoading(false);
+        return;
+      }
+
+      if (navigator.onLine) {
+        signInAnonymously(auth as Auth).catch((err) => {
+          console.error('Auth error:', err);
+          setError('مشكلة في تسجيل الدخول لقاعدة البيانات السحابية.');
+          setSyncStatus('error');
+          setLoading(false);
+        });
+      } else {
+        // A previously authenticated anonymous session is normally restored from
+        // Firebase Auth persistence. If there is no cached session at all, there
+        // is no legitimate way to establish a new Firebase identity offline.
+        setSyncStatus('offline');
+        setLoading(false);
+      }
     });
 
     return () => unsubscribe();
@@ -636,7 +662,9 @@ export default function App() {
     setLoading(true);
     const unsubscribe = onSnapshot(
       docRef,
+      { includeMetadataChanges: true },
       (docSnap) => {
+        farmDocumentExistsRef.current = docSnap.exists();
         if (docSnap.exists()) {
           const data = docSnap.data();
           setCellsData(data.cells || {});
@@ -648,17 +676,59 @@ export default function App() {
           setColGapKinds(data.colGapKinds && typeof data.colGapKinds === 'object' ? data.colGapKinds as Record<number, GapKind> : {});
         } else {
           setCellsData({});
+          setRowsCount(DEFAULT_ROWS);
+          setColsCount(DEFAULT_COLS);
+          setUnlabeledRows([]);
+          setUnlabeledCols([]);
+          setRowGapKinds({});
+          setColGapKinds({});
+        }
+
+        if (!navigator.onLine) {
+          setSyncStatus('offline');
+        } else if (docSnap.metadata.hasPendingWrites || docSnap.metadata.fromCache) {
+          setSyncStatus('syncing');
+        } else {
+          setSyncStatus('synced');
         }
         setLoading(false);
       },
       (err) => {
         console.error('Firestore error:', err);
-        setError('فشل في مزامنة البيانات مع السحابة.');
+        if (!navigator.onLine) {
+          setSyncStatus('offline');
+        } else {
+          const code = (err as { code?: string }).code;
+          if (code === 'permission-denied') {
+            setError('ليس لديك صلاحية الوصول إلى بيانات هذه المزرعة.');
+          } else if (code === 'unauthenticated') {
+            setError('انتهت جلسة المصادقة مع Firebase.');
+          } else {
+            setError('حدث خطأ حقيقي أثناء المزامنة مع Firestore.');
+          }
+          setSyncStatus('error');
+        }
         setLoading(false);
       }
     );
     return () => unsubscribe();
   }, [user]);
+
+  // navigator.onLine is only a network hint. Firestore snapshot metadata below
+  // remains the source of truth for whether queued writes have actually synced.
+  useEffect(() => {
+    if (!isFirebaseConfigured) return;
+
+    const handleOffline = () => setSyncStatus('offline');
+    const handleOnline = () => setSyncStatus('syncing');
+
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
+    return () => {
+      window.removeEventListener('offline', handleOffline);
+      window.removeEventListener('online', handleOnline);
+    };
+  }, []);
 
   // ---- حفظ موحّد للخلايا وأبعاد الشبكة: يكتب للسحابة لو متاحة، وإلا محلياً ----
   const persistFarmState = useCallback(async (
@@ -684,6 +754,7 @@ export default function App() {
         return Number.isInteger(index) && cleanedUnlabeledCols.includes(index) && ['road', 'drainage', 'gap'].includes(value);
       })
     ) as Record<number, GapKind>;
+
     setCellsData(nextCells);
     setRowsCount(nextRows);
     setColsCount(nextCols);
@@ -704,24 +775,69 @@ export default function App() {
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
       const docRef = doc(db, 'artifacts', APP_ID, 'users', user.uid, 'farm_data', 'gridState');
+
       try {
-        await setDoc(docRef, payload, { merge: true });
+        if (!farmDocumentExistsRef.current) {
+          // First write creates the existing document shape without changing its path.
+          await setDoc(docRef, payload, { merge: true });
+          farmDocumentExistsRef.current = true;
+          return;
+        }
+
+        // Keep normal edits granular so changing one cell does not overwrite an
+        // unrelated cell changed by another tab/device. A full write is reserved
+        // for large changes that cannot fit safely into one Firestore update.
+        const updates: Record<string, unknown> = {};
+        const cellIds = new Set([...Object.keys(cellsData), ...Object.keys(nextCells)]);
+        let changedCells = 0;
+
+        for (const cellId of cellIds) {
+          const before = cellsData[cellId];
+          const after = nextCells[cellId];
+          if (JSON.stringify(before) === JSON.stringify(after)) continue;
+          changedCells += 1;
+          updates[`cells.${cellId}`] = after === undefined ? deleteField() : after;
+        }
+
+        if (nextRows !== rowsCount) updates.rowsCount = nextRows;
+        if (nextCols !== colsCount) updates.colsCount = nextCols;
+        if (JSON.stringify(cleanedUnlabeledRows) !== JSON.stringify(unlabeledRows)) updates.unlabeledRows = cleanedUnlabeledRows;
+        if (JSON.stringify(cleanedUnlabeledCols) !== JSON.stringify(unlabeledCols)) updates.unlabeledCols = cleanedUnlabeledCols;
+        if (JSON.stringify(cleanedRowGapKinds) !== JSON.stringify(rowGapKinds)) updates.rowGapKinds = cleanedRowGapKinds;
+        if (JSON.stringify(cleanedColGapKinds) !== JSON.stringify(colGapKinds)) updates.colGapKinds = cleanedColGapKinds;
+
+        if (changedCells > 400) {
+          await setDoc(docRef, payload, { merge: true });
+        } else if (Object.keys(updates).length > 0) {
+          await updateDoc(docRef, updates);
+        }
       } catch (err) {
-        console.error('Failed to save to Firestore, falling back to local copy', err);
-        setError('تعذر الحفظ على السحابة، تم حفظ نسخة محلية مؤقتاً.');
-        try {
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-        } catch { /* تجاهل */ }
+        console.error('Failed to save to Firestore', err);
+        const code = (err as { code?: string }).code;
+        if (navigator.onLine) {
+          if (code === 'permission-denied') {
+            setError('ليس لديك صلاحية حفظ هذه التغييرات.');
+          } else if (code === 'unauthenticated') {
+            setError('انتهت جلسة المصادقة مع Firebase.');
+          } else {
+            setError('حدث خطأ حقيقي أثناء حفظ التغييرات في Firestore.');
+          }
+          setSyncStatus('error');
+        } else {
+          setSyncStatus('offline');
+        }
       }
     } else {
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        setSyncStatus('synced');
       } catch (err) {
         console.error('Failed to save locally', err);
         setError('تعذر حفظ البيانات محلياً (قد تكون مساحة التخزين ممتلئة).');
+        setSyncStatus('error');
       }
     }
-  }, [user, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds]);
+  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds]);
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -991,6 +1107,31 @@ export default function App() {
               <div className="flex items-center gap-1"><Leaf size={14} className="text-emerald-400" /> شجرة</div>
             </div>
           )}
+        </div>
+
+        <div
+          title={syncStatus === 'offline'
+            ? 'غير متصل — التغييرات محفوظة محلياً وستتم المزامنة عند عودة الإنترنت'
+            : syncStatus === 'syncing'
+              ? 'جاري المزامنة'
+              : syncStatus === 'error'
+                ? 'مشكلة في المزامنة'
+                : 'تمت المزامنة'}
+          className={`flex items-center gap-1.5 text-[11px] font-bold px-2.5 py-1.5 rounded-full border ${
+            syncStatus === 'offline'
+              ? 'bg-amber-100/10 border-amber-300/30 text-amber-100'
+              : syncStatus === 'syncing'
+                ? 'bg-sky-100/10 border-sky-300/30 text-sky-100'
+                : syncStatus === 'error'
+                  ? 'bg-red-100/10 border-red-300/30 text-red-100'
+                  : 'bg-emerald-100/10 border-emerald-300/30 text-emerald-100'
+          }`}
+        >
+          {syncStatus === 'offline' && <WifiOff size={13} />}
+          {syncStatus === 'syncing' && <RefreshCw size={13} className="animate-spin" />}
+          {syncStatus === 'error' && <AlertCircle size={13} />}
+          {syncStatus === 'synced' && <CheckCircle2 size={13} />}
+          <span>{syncStatus === 'offline' ? 'غير متصل — محفوظ محلياً' : syncStatus === 'syncing' ? 'جاري المزامنة' : syncStatus === 'error' ? 'مشكلة في المزامنة' : 'تمت المزامنة'}</span>
         </div>
       </header>
 
