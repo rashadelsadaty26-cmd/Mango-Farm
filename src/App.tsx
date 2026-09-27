@@ -62,7 +62,7 @@ function getRowLabel(index: number): string {
   return label;
 }
 
-const MANGO_VARIETIES = ['غير محدد', 'عويس', 'فونس', 'كيت', 'نعومي', 'زبدية', 'تيمور', 'جحراوي', 'أخرى'];
+const MANGO_VARIETIES = ['غير محدد', 'عويس', 'فونس', 'كيت', 'نعومي', 'زبدية', 'تيمور', 'كحراوي', 'أخرى'];
 const TREE_STATUS = ['سليمة', 'تحتاج تقليم', 'مصابة بآفة/مرض'];
 const DISEASES = ['لا يوجد', 'عفن هبابي', 'ذبابة الفاكهة', 'تشوه زهري', 'أخرى'];
 
@@ -915,7 +915,7 @@ export default function App() {
           </div>
           <div>
             <div className="flex items-center gap-2">
-              <h1 className="text-xl font-bold m-0 leading-tight">مزرعة الساداتي</h1>
+              <h1 className="text-xl font-bold m-0 leading-tight">التوأم الرقمي للمزرعة</h1>
               <span
                 title={isFirebaseConfigured ? 'متصل بالمزامنة السحابية (Firebase)' : 'التخزين محلي على هذا الجهاز/المتصفح'}
                 className="flex items-center gap-1 text-[10px] font-bold bg-emerald-950/60 border border-emerald-700 px-2 py-0.5 rounded-full text-emerald-200"
