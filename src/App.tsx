@@ -727,7 +727,7 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-100 font-sans overflow-hidden" dir="rtl">
+    <div className="flex flex-col h-screen bg-[#f0eadd] font-sans overflow-hidden" dir="rtl">
 
       {/* شريط العنوان وأدوات التحكم في الوضع */}
       <header className="bg-emerald-900 text-white p-4 shadow-md flex flex-wrap gap-4 justify-between items-center z-20 relative">
@@ -859,7 +859,7 @@ export default function App() {
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          className={`w-full h-full touch-none bg-[#f0eadd] ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          className={`absolute inset-0 w-full h-full touch-none bg-[#f0eadd] overflow-hidden ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
