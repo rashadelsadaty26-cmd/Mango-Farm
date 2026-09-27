@@ -33,6 +33,14 @@ const STORAGE_KEY = 'mango_farm_grid_state_v1';
 // this application.
 const APP_ID = (import.meta.env.VITE_APP_ID as string) || 'mango-farm-app';
 
+function getFarmDocumentRef(firestore: Firestore, uid: string) {
+  return doc(firestore, 'artifacts', APP_ID, 'users', uid, 'farm_data', 'gridState');
+}
+
+function getLocalStorageKey(uid?: string | null): string {
+  return uid && uid !== 'local-user' ? `${STORAGE_KEY}_${uid}` : STORAGE_KEY;
+}
+
 const firebaseConfig = {
   apiKey: (import.meta.env.VITE_FIREBASE_API_KEY as string | undefined) ?? 'AIzaSyB4VoL2HkQNRlKDFOH9C4A9v4LGIToN8vs',
   authDomain: (import.meta.env.VITE_FIREBASE_AUTH_DOMAIN as string | undefined) ?? 'mango-farm-4b1a6.firebaseapp.com',
@@ -837,7 +845,7 @@ export default function App() {
   useEffect(() => {
     if (!isFirebaseConfigured || !auth) {
       try {
-        const saved = localStorage.getItem(STORAGE_KEY);
+        const saved = localStorage.getItem(getLocalStorageKey(null));
         if (saved) {
           const parsed = JSON.parse(saved);
           setCellsData(parsed.cells || {});
@@ -861,16 +869,23 @@ export default function App() {
     }
 
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
+      // Never carry one user's farm UI into another user's session.
+      setCellsData({});
+      setRowsCount(DEFAULT_ROWS);
+      setColsCount(DEFAULT_COLS);
+      setUnlabeledRows([]);
+      setUnlabeledCols([]);
+      setRowGapKinds({});
+      setColGapKinds({});
+      farmDocumentExistsRef.current = false;
       setUser(currentUser);
-      if (currentUser) {
-        setError('');
-        setLoading(false);
-        return;
-      }
+      setError('');
 
-      // Firebase Auth restores the previously authenticated browser session
-      // locally. If there is no session, the dedicated login page is required.
-      setSyncStatus(navigator.onLine ? 'synced' : 'offline');
+      if (currentUser) {
+        setSyncStatus(navigator.onLine ? 'syncing' : 'offline');
+      } else {
+        setSyncStatus(navigator.onLine ? 'synced' : 'offline');
+      }
       setLoading(false);
     });
 
@@ -881,7 +896,7 @@ export default function App() {
   useEffect(() => {
     if (!isFirebaseConfigured || !db || !user || !('uid' in user) || user.uid === 'local-user') return;
 
-    const docRef = doc(db, 'artifacts', APP_ID, 'users', user.uid, 'farm_data', 'gridState');
+    const docRef = getFarmDocumentRef(db, user.uid);
 
     setLoading(true);
     const unsubscribe = onSnapshot(
@@ -891,6 +906,20 @@ export default function App() {
         farmDocumentExistsRef.current = docSnap.exists();
         if (docSnap.exists()) {
           const data = docSnap.data();
+          if (data.ownerUid && data.ownerUid !== user.uid) {
+            console.error('Farm ownership mismatch for current user. Refusing to load another user\'s farm.');
+            setCellsData({});
+            setRowsCount(DEFAULT_ROWS);
+            setColsCount(DEFAULT_COLS);
+            setUnlabeledRows([]);
+            setUnlabeledCols([]);
+            setRowGapKinds({});
+            setColGapKinds({});
+            setError('تعذر تحميل مزرعة هذا الحساب بأمان. تحقق من بيانات Firestore.');
+            setSyncStatus('error');
+            setLoading(false);
+            return;
+          }
           setCellsData(data.cells || {});
           setRowsCount(data.rowsCount || DEFAULT_ROWS);
           setColsCount(data.colsCount || DEFAULT_COLS);
@@ -898,7 +927,25 @@ export default function App() {
           setUnlabeledCols(Array.isArray(data.unlabeledCols) ? data.unlabeledCols.filter((n): n is number => Number.isInteger(n)) : []);
           setRowGapKinds(data.rowGapKinds && typeof data.rowGapKinds === 'object' ? data.rowGapKinds as Record<number, GapKind> : {});
           setColGapKinds(data.colGapKinds && typeof data.colGapKinds === 'object' ? data.colGapKinds as Record<number, GapKind> : {});
+          if (!data.ownerUid && navigator.onLine) {
+            // Backfill ownership metadata without changing the existing farm shape.
+            setDoc(docRef, { ownerUid: user.uid }, { merge: true }).catch((err) => {
+              console.error('Failed to add farm ownership metadata', err);
+            });
+          }
         } else {
+          // A brand-new Firebase user gets a brand-new, empty farm document.
+          // This is deliberately created at the user's own UID path only.
+          const emptyFarm = {
+            ownerUid: user.uid,
+            cells: {},
+            rowsCount: DEFAULT_ROWS,
+            colsCount: DEFAULT_COLS,
+            unlabeledRows: [],
+            unlabeledCols: [],
+            rowGapKinds: {},
+            colGapKinds: {},
+          };
           setCellsData({});
           setRowsCount(DEFAULT_ROWS);
           setColsCount(DEFAULT_COLS);
@@ -906,6 +953,15 @@ export default function App() {
           setUnlabeledCols([]);
           setRowGapKinds({});
           setColGapKinds({});
+          farmDocumentExistsRef.current = true;
+          setDoc(docRef, emptyFarm, { merge: true }).catch((err) => {
+            console.error('Failed to initialize new user farm', err);
+            farmDocumentExistsRef.current = false;
+            if (navigator.onLine) {
+              setError('تعذر إنشاء مزرعة هذا الحساب في Firestore.');
+              setSyncStatus('error');
+            }
+          });
         }
 
         if (!navigator.onLine) {
@@ -988,6 +1044,7 @@ export default function App() {
     setColGapKinds(cleanedColGapKinds);
 
     const payload = {
+      ownerUid: user && 'uid' in user && user.uid !== 'local-user' ? user.uid : undefined,
       cells: nextCells,
       rowsCount: nextRows,
       colsCount: nextCols,
@@ -998,7 +1055,7 @@ export default function App() {
     };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
-      const docRef = doc(db, 'artifacts', APP_ID, 'users', user.uid, 'farm_data', 'gridState');
+      const docRef = getFarmDocumentRef(db, user.uid);
 
       try {
         if (!farmDocumentExistsRef.current) {
@@ -1053,7 +1110,7 @@ export default function App() {
       }
     } else {
       try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+        localStorage.setItem(getLocalStorageKey(user && 'uid' in user ? user.uid : null), JSON.stringify(payload));
         setSyncStatus('synced');
       } catch (err) {
         console.error('Failed to save locally', err);
