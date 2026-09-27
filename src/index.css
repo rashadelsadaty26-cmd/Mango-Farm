@@ -71,66 +71,94 @@ body {
   box-shadow: none !important;
 }
 
-/* Flat, low-cost farm graphics: the map structure stays intact, but decorative
-   SVG layers/shadows are removed so zooming/panning a 1,800-cell grid stays light. */
-.farm-flat-tree {
-  position: relative;
-  width: 78%;
-  height: 86%;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: flex-end;
+/* Lightweight, natural-looking mango trees.
+   One small SVG silhouette per tree; no filters, drop shadows or animations. */
+.farm-natural-tree {
+  width: 82%;
+  height: 94%;
+  display: block;
+  overflow: visible;
+}
+
+.farm-flat-empty-tree {
+  width: 34%;
+  height: 34%;
+  border: 2px solid #cbd5d1;
+  border-radius: 50%;
+  opacity: 0.7;
+  align-self: center;
+  margin-bottom: 28%;
 }
 
 .farm-flat-tree-canopy {
+  border: 0;
+}
+
+/* Full-bleed infrastructure: the fill extends into the 4px grid gap. Since
+   each neighboring infrastructure cell extends by 2px, matching cells meet
+   exactly and read as one continuous road/drain/water strip. */
+.farm-map-infrastructure-cell {
+  overflow: visible !important;
+  z-index: 1;
+}
+
+.farm-map-infrastructure-fill {
   position: absolute;
-  top: 4%;
-  width: 78%;
-  aspect-ratio: 1;
-  border-radius: 9999px;
-  border: 2px solid rgba(0, 0, 0, 0.07);
+  inset: -2px;
+  z-index: 0;
+  border-radius: 0;
+  pointer-events: none;
 }
 
-.farm-flat-tree-empty {
-  width: 46%;
-  opacity: 0.55;
+.farm-infra-kind-water { background: #3b82f6; }
+.farm-infra-kind-drainage { background: #292524; }
+.farm-infra-kind-road { background: #cbd5e1; }
+.farm-infra-kind-gap { background: #f1f5f9; }
+
+.farm-map-infrastructure-cell .farm-map-cell-label {
+  display: none;
 }
 
-.farm-flat-tree-trunk {
-  width: 12%;
-  height: 28%;
-  min-height: 6px;
-  border-radius: 3px 3px 2px 2px;
-  background: #78350f;
-  margin-bottom: 4%;
+/* Keep the visual layer cheap when zoomed far out. The tree SVG remains one
+   small silhouette, while labels and status badges disappear. */
+.farm-map-low-zoom .farm-map-cell-label,
+.farm-map-low-zoom .farm-natural-tree + * {
+  display: none;
 }
 
-.farm-flat-tree-disease-dot {
-  position: absolute;
-  width: 16%;
-  aspect-ratio: 1;
-  border-radius: 9999px;
-  background: #450a0a;
-  right: 16%;
-  bottom: 20%;
+.farm-map-low-zoom .farm-map-infrastructure-fill {
+  inset: -2px;
 }
 
-.farm-flat-infra {
-  width: 100%;
-  height: 100%;
-  border-radius: 2px;
+.farm-map-low-zoom svg {
+  filter: none !important;
 }
 
-.farm-flat-water { background: #3b82f6; }
-.farm-flat-drainage { background: #292524; }
-.farm-flat-road { background: #cbd5e1; }
-
-/* Wheel must stay inside the farm viewport; do not let browser page scrolling
-   compete with the map's wheel-zoom interaction. */
+/* Wheel/pointer map surface */
 .farm-map-canvas {
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  overscroll-behavior: contain;
+  -webkit-tap-highlight-color: transparent;
+  cursor: grab;
   overflow: hidden;
-  overscroll-behavior: none;
+}
+
+.farm-map-canvas:active {
+  cursor: grabbing;
+}
+
+.farm-map-canvas button,
+.farm-map-canvas [role="button"] {
+  touch-action: manipulation;
+}
+
+.farm-map-canvas > div {
+  will-change: transform;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  transform-style: preserve-3d;
 }
 
 .farm-map-canvas,

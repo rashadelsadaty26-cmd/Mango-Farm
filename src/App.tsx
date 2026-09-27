@@ -133,21 +133,56 @@ function getConnections(
 }
 
 // ============================================================================
-// Flat map graphics: keep the same meaning/data while removing expensive SVG
-// details, shadows and decorative layers. The grid itself becomes the visual
-// structure, so 1,800 cells remain cheap to paint and transform.
+// Lightweight natural farm graphics.
+// Keep the map flat and fast, but make mango trees feel organic rather than
+// like perfect circles. Infrastructure fills the tiny grid gaps so adjacent
+// road/drain/water cells read as one continuous strip.
 // ============================================================================
-const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isDiseased?: boolean; isEmpty?: boolean }) => (
-  <div className="farm-flat-tree" aria-hidden="true">
-    <div
-      className={`farm-flat-tree-canopy ${isEmpty ? 'farm-flat-tree-empty' : ''}`}
-      style={{ backgroundColor: isEmpty ? '#d1d5db' : (fill || '#059669') }}
+const MangoTreeSVG = ({
+  fill,
+  isDiseased,
+  isEmpty,
+}: {
+  fill?: string | null;
+  isDiseased?: boolean;
+  isEmpty?: boolean;
+}) => {
+  if (isEmpty) {
+    return (
+      <div className="farm-flat-empty-tree" aria-hidden="true">
+        <span />
+      </div>
+    );
+  }
+
+  const canopy = fill || '#159447';
+  const canopyDark = fill === '#d97706' ? '#b45309' : fill === '#dc2626' ? '#b91c1c' : '#0f7a3a';
+
+  return (
+    <svg
+      className="farm-natural-tree"
+      viewBox="0 0 100 100"
+      role="img"
+      aria-hidden="true"
+      preserveAspectRatio="xMidYMid meet"
     >
-      {isDiseased && <span className="farm-flat-tree-disease-dot" />}
-    </div>
-    {!isEmpty && <div className="farm-flat-tree-trunk" />}
-  </div>
-);
+      <path
+        d="M49 83 C47 73 45 66 45 58 C37 57 30 53 29 46 C27 38 33 31 41 31 C43 22 50 16 59 18 C68 13 79 19 80 28 C88 30 93 37 91 45 C89 53 82 57 74 57 C71 64 67 71 66 83 Z"
+        fill={canopy}
+      />
+      <path
+        d="M42 38 C47 28 56 24 65 26 C70 27 74 31 76 35 C67 32 58 34 51 40 C47 44 44 48 40 50 C36 47 36 42 42 38 Z"
+        fill={canopyDark}
+        opacity="0.22"
+      />
+      <path
+        d="M48 82 C50 70 51 61 54 54 C57 51 61 51 63 54 C60 64 59 73 61 83 Z"
+        fill="#713f12"
+      />
+      {isDiseased && <circle cx="78" cy="41" r="4.5" fill="#7f1d1d" />}
+    </svg>
+  );
+};
 
 const ConnectedWaterCanalSVG = (_props: { connections: Connections }) => (
   <div className="farm-flat-infra farm-flat-water" aria-label="مروى" />
@@ -832,37 +867,28 @@ export default function App() {
     return { color: '#059669', isEmpty: false, isDiseased: false, icon: <Leaf size={12} />, iconColor: 'text-emerald-600' };
   };
 
-  const renderCellContent = (cellId: string) => {
+  const renderCellContent = (cellId: string, forcedGapKind?: GapKind) => {
     const data = cellsData[cellId];
     const type = data?.type || 'tree';
 
-    if (type === 'water_canal') {
-      const connections = getConnections(cellId, 'water_canal', cellsData, rowLabels, colsCount);
-      return <ConnectedWaterCanalSVG connections={connections} />;
-    }
-    if (type === 'drainage') {
-      const connections = getConnections(cellId, 'drainage', cellsData, rowLabels, colsCount);
-      return <ConnectedDrainageSVG connections={connections} />;
-    }
-    if (type === 'road') {
-      const connections = getConnections(cellId, 'road', cellsData, rowLabels, colsCount);
-      return <ConnectedRoadSVG connections={connections} />;
+    // Infrastructure is painted by the cell's full-bleed background so adjacent
+    // road/drain/water cells can touch without visible grid gaps.
+    if (type === 'water_canal' || type === 'drainage' || type === 'road' || forcedGapKind) {
+      return null;
     }
 
-    // مساحة الشجرة: تُعتبر "مُدخلة" فقط لو المستخدم حفظ بياناتها فعلاً
-    // (وجود lastUpdated)، وإلا تظهر كموقع فارغ لم يُدخل بعد (تصحيح لعرض كانت
-    // فيه كل المساحات تظهر "سليمة" افتراضياً حتى لو لم تُسجَّل أي بيانات).
+    // مساحة الشجرة: تُعتبر "مُدخلة" فقط لو المستخدم حفظ بياناتها فعلاً.
     const isConfigured = !!data?.lastUpdated;
     const statusData = getTreeStatusData(isConfigured ? data! : null);
 
     return (
       <div className="relative w-full h-full flex flex-col items-center justify-end">
         {!statusData.isEmpty && (
-          <div className={`absolute top-0 right-1 p-0.5 rounded-full bg-white shadow-md z-10 border border-gray-200 ${statusData.iconColor}`}>
+          <div className={`absolute top-1 right-1 p-0.5 rounded-full bg-white z-10 border border-gray-200 ${statusData.iconColor}`}>
             {statusData.icon}
           </div>
         )}
-        <div className="w-full h-[85%]">
+        <div className="w-full h-[92%]">
           <MangoTreeSVG fill={statusData.color} isDiseased={statusData.isDiseased} isEmpty={statusData.isEmpty} />
         </div>
       </div>
@@ -1157,26 +1183,37 @@ export default function App() {
                     const displayCellLabel = displayColLabels[colIndex]
                       ? (displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${displayColLabels[colIndex]}` : displayColLabels[colIndex])
                       : (displayRowLabels[rowIndex] ? displayRowLabels[rowIndex] : '');
-                    const cellType = cellsData[cellId]?.type || 'tree';
+                    const dataForCell = cellsData[cellId];
+                    const cellType = dataForCell?.type || 'tree';
 
                     const gapKind = rowGapKinds[rowIndex] || colGapKinds[colIndex];
-                    const gapBgClass = gapKind === 'road' ? 'bg-stone-200/80' : gapKind === 'drainage' ? 'bg-sky-100/80' : gapKind === 'gap' ? 'bg-gray-100/70' : '';
+                    const infrastructureKind: GapKind | 'water' | null =
+                      cellType === 'water_canal' ? 'water' :
+                      cellType === 'drainage' ? 'drainage' :
+                      cellType === 'road' ? 'road' :
+                      gapKind || null;
+                    const isInfrastructure = infrastructureKind !== null;
 
                     return (
                       <div
                         key={cellId}
                         data-cell-id={cellId}
-                        className={`farm-map-cell relative w-full h-full flex items-center justify-center rounded-sm ${gapBgClass} ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
+                        className={`farm-map-cell relative w-full h-full flex items-center justify-center ${isInfrastructure ? 'farm-map-infrastructure-cell' : ''} ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
                         title={mode === 'edit' ? `تعديل: ${cellId}` : (cellType === 'tree' ? `شجرة ${cellId}` : '')}
                       >
-                        {renderCellContent(cellId)}
+                        <div
+                          className={`farm-map-infrastructure-fill ${isInfrastructure ? `farm-infra-kind-${infrastructureKind}` : ''}`}
+                          aria-hidden="true"
+                        />
+                        <div className={`relative z-[1] w-full h-full ${isInfrastructure ? 'pointer-events-none' : ''}`}>
+                          {renderCellContent(cellId, !dataForCell?.type ? (gapKind || undefined) : undefined)}
+                        </div>
 
                         {/* رقم تعريف المساحة */}
                         <span className="farm-map-cell-label absolute -bottom-1 bg-white/90 border border-gray-200 px-1 rounded-[3px] text-[8px] font-bold text-gray-700 shadow-sm pointer-events-none z-10">
                           {displayCellLabel}
                         </span>
                       </div>
-                    );
                   })}
                 </React.Fragment>
               ))}
