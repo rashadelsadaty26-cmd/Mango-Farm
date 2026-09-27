@@ -38,3 +38,28 @@ body {
 .farm-map-canvas [role="button"] {
   touch-action: manipulation;
 }
+
+
+/* Performance safeguards for deep zoom-out. The farm contains 1,800 cells;
+   expensive SVG filters and tiny labels add a large compositing cost when the
+   entire map is visible at once. At low zoom the geometry stays in place while
+   visual-only details are simplified. */
+.farm-map-canvas {
+  contain: layout paint;
+}
+
+.farm-map-low-zoom {
+  contain: layout paint;
+}
+
+.farm-map-low-zoom svg {
+  filter: none !important;
+}
+
+.farm-map-low-zoom .farm-map-cell-label {
+  display: none;
+}
+
+.farm-map-low-zoom .farm-map-low-zoom-tree {
+  box-shadow: none !important;
+}

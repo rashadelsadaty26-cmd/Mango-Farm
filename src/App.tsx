@@ -266,48 +266,99 @@ export default function App() {
   const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
+  // Low-zoom mode is intentionally threshold-based so zooming never causes a
+  // React render on every wheel/pinch frame. It only swaps the expensive SVG
+  // tree artwork for lightweight cells when the whole farm is zoomed out.
+  const [isLowZoom, setIsLowZoom] = useState(false);
 
   const rowLabels = React.useMemo(
     () => Array.from({ length: rowsCount }, (_, i) => getRowLabel(i)),
     [rowsCount]
   );
 
-  // ---- تحريك وتكبير/تصغير: كل شيء عبر refs + تعديل مباشر لخاصية transform في
-  // الـ DOM، بدون أي setState أثناء السحب أو الزووم، حتى لا تُعاد رسمة الشبكة
-  // كاملة (قد تصل لآلاف الخلايا) في كل حركة فأر/إصبع — هذا هو سبب الإحساس
-  // بالبطء/الصعوبة سابقاً على الديسكتوب، وهو ما كان سيصبح أسوأ على الموبايل.
+  // ---- تحريك وتكبير/تصغير: refs + direct DOM transform so the whole grid
+  // does not re-render during every pointer/wheel event. Pan is clamped to the
+  // real scaled content bounds, and content is centered automatically when it
+  // becomes smaller than the viewport.
   const scaleRef = useRef(1);
   const posRef = useRef({ x: 0, y: 0 });
   const panZoomRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-
-  const applyTransform = () => {
-    if (panZoomRef.current) {
-      panZoomRef.current.style.transform = `translate(${posRef.current.x}px, ${posRef.current.y}px) scale(${scaleRef.current})`;
-    }
-  };
+  const wheelFrameRef = useRef<number | null>(null);
+  const wheelDeltaRef = useRef(0);
+  const wheelPointRef = useRef({ x: 0, y: 0 });
 
   const clampScale = (s: number) => Math.min(Math.max(0.15, s), 3);
 
-  // تكبير/تصغير مع تثبيت النقطة الموجودة تحت المؤشر/الإصبع في مكانها (بدل
-  // التكبير دائماً من زاوية الشبكة العلوية، وهو ما كان يسبب "قفز" المحتوى).
+  const getContentSize = useCallback(() => {
+    const content = panZoomRef.current;
+    if (!content) return { width: 0, height: 0 };
+    return {
+      width: content.offsetWidth,
+      height: content.offsetHeight,
+    };
+  }, []);
+
+  const getBoundedPosition = useCallback((x: number, y: number, scale = scaleRef.current) => {
+    const container = containerRef.current;
+    const content = panZoomRef.current;
+    if (!container || !content) return { x, y };
+
+    const viewportW = container.clientWidth;
+    const viewportH = container.clientHeight;
+    const { width: contentW, height: contentH } = getContentSize();
+    const scaledW = contentW * scale;
+    const scaledH = contentH * scale;
+
+    const boundedX = scaledW <= viewportW
+      ? (viewportW - scaledW) / 2
+      : Math.min(0, Math.max(viewportW - scaledW, x));
+    const boundedY = scaledH <= viewportH
+      ? (viewportH - scaledH) / 2
+      : Math.min(0, Math.max(viewportH - scaledH, y));
+
+    return { x: boundedX, y: boundedY };
+  }, [getContentSize]);
+
+  const updateLowZoomMode = useCallback((scale: number) => {
+    const low = scale < 0.62;
+    if (low !== isLowZoom) setIsLowZoom(low);
+    panZoomRef.current?.classList.toggle('farm-map-low-zoom', low);
+  }, [isLowZoom]);
+
+  const applyTransform = useCallback(() => {
+    if (!panZoomRef.current) return;
+    const bounded = getBoundedPosition(posRef.current.x, posRef.current.y, scaleRef.current);
+    posRef.current = bounded;
+    panZoomRef.current.style.transform = `translate3d(${bounded.x}px, ${bounded.y}px, 0) scale(${scaleRef.current})`;
+    updateLowZoomMode(scaleRef.current);
+  }, [getBoundedPosition, updateLowZoomMode]);
+
   const zoomAtPoint = useCallback((clientX: number, clientY: number, newScaleRaw: number) => {
     const container = containerRef.current;
     if (!container) return;
     const rect = container.getBoundingClientRect();
     const px = clientX - rect.left;
     const py = clientY - rect.top;
+    const oldScale = scaleRef.current;
     const newScale = clampScale(newScaleRaw);
-    const contentX = (px - posRef.current.x) / scaleRef.current;
-    const contentY = (py - posRef.current.y) / scaleRef.current;
-    posRef.current = { x: px - contentX * newScale, y: py - contentY * newScale };
+
+    if (newScale === oldScale) return;
+
+    const contentX = (px - posRef.current.x) / oldScale;
+    const contentY = (py - posRef.current.y) / oldScale;
+
     scaleRef.current = newScale;
+    posRef.current = {
+      x: px - contentX * newScale,
+      y: py - contentY * newScale,
+    };
     applyTransform();
-  }, []);
+  }, [applyTransform]);
 
   const resetView = () => {
     scaleRef.current = 1;
-    posRef.current = { x: 0, y: 0 };
+    posRef.current = getBoundedPosition(0, 0, 1);
     applyTransform();
   };
 
@@ -323,11 +374,24 @@ export default function App() {
     zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, scaleRef.current / 1.2);
   };
 
-  // ---- عجلة الفأرة/التراك باد: زووم سلس ومتناسب مع سرعة التمرير الفعلية ----
+  // ---- Mouse wheel: batch bursts of wheel events into one animation frame.
+  // Trackpad/mouse input can fire dozens of events per frame; coalescing them
+  // prevents needless transform/compositing work.
   const handleWheel = useCallback((e: WheelEvent) => {
     e.preventDefault();
-    const factor = Math.exp(-e.deltaY * 0.0015);
-    zoomAtPoint(e.clientX, e.clientY, scaleRef.current * factor);
+    wheelDeltaRef.current += e.deltaY;
+    wheelPointRef.current = { x: e.clientX, y: e.clientY };
+
+    if (wheelFrameRef.current !== null) return;
+
+    wheelFrameRef.current = requestAnimationFrame(() => {
+      wheelFrameRef.current = null;
+      const delta = wheelDeltaRef.current;
+      wheelDeltaRef.current = 0;
+      const point = wheelPointRef.current;
+      const factor = Math.exp(-delta * 0.0015);
+      zoomAtPoint(point.x, point.y, scaleRef.current * factor);
+    });
   }, [zoomAtPoint]);
 
   useEffect(() => {
@@ -337,8 +401,20 @@ export default function App() {
     }
     return () => {
       if (container) container.removeEventListener('wheel', handleWheel);
+      if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
+      wheelFrameRef.current = null;
+      wheelDeltaRef.current = 0;
     };
   }, [handleWheel]);
+
+  // Keep the schedule centered/clamped when the viewport changes size.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const resizeObserver = new ResizeObserver(() => applyTransform());
+    resizeObserver.observe(container);
+    return () => resizeObserver.disconnect();
+  }, [applyTransform]);
 
   // ---- تحميل البيانات عند بدء التشغيل: Firebase لو متاح، وإلا محلياً ----
   useEffect(() => {
@@ -624,6 +700,16 @@ export default function App() {
     const isConfigured = !!data?.lastUpdated;
     const statusData = getTreeStatusData(isConfigured ? data! : null);
 
+    if (isLowZoom) {
+      return (
+        <div
+          className={`w-[68%] h-[58%] rounded-full farm-map-low-zoom-tree ${statusData.isEmpty ? 'bg-gray-300/70' : ''}`}
+          style={statusData.isEmpty ? undefined : { backgroundColor: statusData.color || '#059669' }}
+          aria-hidden="true"
+        />
+      );
+    }
+
     return (
       <div className={`relative w-full h-full flex flex-col items-center justify-end transition-transform duration-200 ease-out ${mode === 'view' ? 'hover:scale-125 hover:-translate-y-2 hover:z-20' : 'hover:scale-110'}`}>
         {!statusData.isEmpty && (
@@ -780,7 +866,7 @@ export default function App() {
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          className={`w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+          className={`farm-map-canvas w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -834,7 +920,7 @@ export default function App() {
                         {renderCellContent(cellId)}
 
                         {/* رقم تعريف المساحة */}
-                        <span className="absolute -bottom-1 bg-white/90 border border-gray-200 px-1 rounded-[3px] text-[8px] font-bold text-gray-700 shadow-sm pointer-events-none z-10">
+                        <span className="farm-map-cell-label absolute -bottom-1 bg-white/90 border border-gray-200 px-1 rounded-[3px] text-[8px] font-bold text-gray-700 shadow-sm pointer-events-none z-10">
                           {cellId}
                         </span>
                       </div>
