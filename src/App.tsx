@@ -132,117 +132,34 @@ function getConnections(
   return result;
 }
 
-// 1. شجرة المانجو
-const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isDiseased?: boolean; isEmpty?: boolean }) => {
-  if (isEmpty) {
-    return (
-      <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-sm opacity-60 farm-map-tree-svg">
-        <ellipse className="tree-ground-shadow" cx="50" cy="90" rx="20" ry="4" fill="rgba(0,0,0,0.05)" />
-        <path d="M50 90 L50 50" stroke="#9ca3af" strokeWidth="4" strokeLinecap="round" />
-        <path d="M50 70 L35 55" stroke="#9ca3af" strokeWidth="3" strokeLinecap="round" />
-        <circle cx="50" cy="45" r="8" fill="#d1d5db" />
-        <circle cx="32" cy="52" r="5" fill="#d1d5db" />
-      </svg>
-    );
-  }
+// ============================================================================
+// Flat map graphics: keep the same meaning/data while removing expensive SVG
+// details, shadows and decorative layers. The grid itself becomes the visual
+// structure, so 1,800 cells remain cheap to paint and transform.
+// ============================================================================
+const MangoTreeSVG = ({ fill, isDiseased, isEmpty }: { fill?: string | null; isDiseased?: boolean; isEmpty?: boolean }) => (
+  <div className="farm-flat-tree" aria-hidden="true">
+    <div
+      className={`farm-flat-tree-canopy ${isEmpty ? 'farm-flat-tree-empty' : ''}`}
+      style={{ backgroundColor: isEmpty ? '#d1d5db' : (fill || '#059669') }}
+    >
+      {isDiseased && <span className="farm-flat-tree-disease-dot" />}
+    </div>
+    {!isEmpty && <div className="farm-flat-tree-trunk" />}
+  </div>
+);
 
-  return (
-    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md farm-map-tree-svg">
-      <ellipse className="tree-ground-shadow" cx="50" cy="95" rx="25" ry="5" fill="rgba(0,0,0,0.15)" />
-      <path d="M45 95 C 45 75, 42 60, 42 50 L 58 50 C 58 60, 55 75, 55 95 Z" fill="#78350f" />
-      <g fill={fill || '#059669'}>
-        <circle cx="50" cy="30" r="28" />
-        <circle cx="28" cy="50" r="25" />
-        <circle cx="72" cy="50" r="25" />
-        <circle cx="38" cy="68" r="22" />
-        <circle cx="62" cy="68" r="22" />
-        <circle cx="50" cy="50" r="26" />
-      </g>
-      <g className="tree-detail-layer" fill="rgba(255,255,255,0.15)">
-        <circle cx="40" cy="25" r="12" />
-        <circle cx="22" cy="45" r="10" />
-      </g>
-      <g className="tree-detail-layer" fill="rgba(0,0,0,0.1)">
-        <circle cx="60" cy="70" r="15" />
-        <circle cx="75" cy="55" r="12" />
-      </g>
-      {isDiseased && (
-        <g className="tree-detail-layer" fill="#450a0a" opacity="0.6">
-          <circle cx="45" cy="35" r="3" />
-          <circle cx="60" cy="40" r="4" />
-          <circle cx="35" cy="55" r="3" />
-          <circle cx="70" cy="50" r="3.5" />
-          <circle cx="50" cy="60" r="4" />
-          <circle cx="25" cy="50" r="2.5" />
-        </g>
-      )}
-    </svg>
-  );
-};
+const ConnectedWaterCanalSVG = (_props: { connections: Connections }) => (
+  <div className="farm-flat-infra farm-flat-water" aria-label="مروى" />
+);
 
-// الأنواع الثلاثة التالية (مروى/مصرف/طريق) كلها "متصلة" بنفس المبدأ: كل خلية
-// تتحقق من جيرانها (فوق/تحت/يمين/شمال) من نفس النوع فقط، وتمتد نحوهم تلقائياً
-// بدل تكرار نفس الرمز المنفصل في كل خلية — فتظهر كشبكة واحدة متصلة.
+const ConnectedDrainageSVG = (_props: { connections: Connections }) => (
+  <div className="farm-flat-infra farm-flat-drainage" aria-label="مصرف" />
+);
 
-// 2. المروى (Water Canal) — بروز اللون الأزرق الغامق (القناة) نحو كل جار متصل،
-// وما تبقى يظهر بلون أفتح (ضفة المروى) في الاتجاهات غير المتصلة.
-const ConnectedWaterCanalSVG = ({ connections }: { connections: Connections }) => {
-  const { up, down, left, right } = connections;
-  return (
-    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90 farm-map-non-tree">
-      <rect width="100" height="100" fill="#bfdbfe" />
-      <rect x="25" y="25" width="50" height="50" fill="#3b82f6" />
-      {up && <rect x="25" y="0" width="50" height="25" fill="#3b82f6" />}
-      {down && <rect x="25" y="75" width="50" height="25" fill="#3b82f6" />}
-      {left && <rect x="0" y="25" width="25" height="50" fill="#3b82f6" />}
-      {right && <rect x="75" y="25" width="25" height="50" fill="#3b82f6" />}
-      <path d="M -10 30 Q 25 15 50 30 T 110 30" fill="none" stroke="#93c5fd" strokeWidth="4" strokeLinecap="round" opacity="0.5" />
-      <path d="M -10 70 Q 25 55 50 70 T 110 70" fill="none" stroke="#93c5fd" strokeWidth="4" strokeLinecap="round" opacity="0.5" />
-    </svg>
-  );
-};
-
-// 3. المصرف (Drainage) — مربع مركزي ثابت + امتداد (بروز) نحو كل اتجاه متصل.
-const ConnectedDrainageSVG = ({ connections }: { connections: Connections }) => {
-  const { up, down, left, right } = connections;
-  return (
-    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-95 farm-map-non-tree">
-      <rect width="100" height="100" fill="#78716c" />
-      <rect x="25" y="25" width="50" height="50" fill="#292524" />
-      {up && <rect x="25" y="0" width="50" height="25" fill="#292524" />}
-      {down && <rect x="25" y="75" width="50" height="25" fill="#292524" />}
-      {left && <rect x="0" y="25" width="25" height="50" fill="#292524" />}
-      {right && <rect x="75" y="25" width="25" height="50" fill="#292524" />}
-    </svg>
-  );
-};
-
-// 4. طريق (Road) — الرصفة نفسها موحّدة اللون دايماً (كانت كده أصلاً)، لكن خطوط
-// تقسيم المسار (الداشات) دلوقتي بتتجه أفقياً أو رأسياً حسب الجيران المتصلين
-// بدل اتجاه رأسي ثابت كان بيقطع أي طريق أفقي بخطوط غلط.
-const ConnectedRoadSVG = ({ connections }: { connections: Connections }) => {
-  const { up, down, left, right } = connections;
-  const vertical = up || down;
-  const horizontal = left || right;
-  return (
-    <svg viewBox="0 0 100 100" className="w-full h-full rounded shadow-sm opacity-90 farm-map-non-tree">
-      <rect width="100" height="100" fill="#d6d3d1" />
-      {vertical && (
-        <>
-          <line x1="30" y1="0" x2="30" y2="100" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
-          <line x1="70" y1="0" x2="70" y2="100" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
-        </>
-      )}
-      {horizontal && (
-        <>
-          <line x1="0" y1="30" x2="100" y2="30" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
-          <line x1="0" y1="70" x2="100" y2="70" stroke="#a8a29e" strokeWidth="6" strokeDasharray="12 8" opacity="0.6" />
-        </>
-      )}
-      {!vertical && !horizontal && <circle cx="50" cy="50" r="8" fill="#a8a29e" opacity="0.4" />}
-    </svg>
-  );
-};
+const ConnectedRoadSVG = (_props: { connections: Connections }) => (
+  <div className="farm-flat-infra farm-flat-road" aria-label="طريق" />
+);
 
 export default function App() {
   const [user, setUser] = useState<User | { uid: string } | null>(null);
@@ -555,15 +472,6 @@ export default function App() {
     const container = containerRef.current;
     if (!container) return;
 
-    // Capture-phase native listener is intentional: it reliably receives mouse
-    // wheel events even when a child SVG/cell stops propagation. React state is
-    // not involved in this high-frequency path.
-    const wheelListener = (e: WheelEvent) => {
-      const target = e.target as Node | null;
-      if (!target || !container.contains(target)) return;
-      handleWheel(e);
-    };
-    document.addEventListener('wheel', wheelListener, { passive: false, capture: true });
     measureMap();
 
     const resizeObserver = new ResizeObserver(() => {
@@ -576,7 +484,6 @@ export default function App() {
     resizeObserver.observe(container);
     if (panZoomRef.current) resizeObserver.observe(panZoomRef.current);
 
-    // Position the map correctly after the first layout pass.
     const initialFrame = requestAnimationFrame(() => {
       measureMap();
       const initialPos = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
@@ -586,7 +493,6 @@ export default function App() {
     });
 
     return () => {
-      document.removeEventListener('wheel', wheelListener, { capture: true });
       resizeObserver.disconnect();
       cancelAnimationFrame(initialFrame);
       if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
@@ -596,7 +502,7 @@ export default function App() {
       transformFrameRef.current = null;
       wheelDeltaRef.current = 0;
     };
-  }, [clampPosition, handleWheel, measureMap, scheduleTransform, stopZoomAnimation]);
+  }, [clampPosition, measureMap, scheduleTransform, stopZoomAnimation]);
 
   // Re-measure when the physical grid size changes, without disturbing the
   // user's zoom unless the new dimensions require clamping.
@@ -950,7 +856,7 @@ export default function App() {
     const statusData = getTreeStatusData(isConfigured ? data! : null);
 
     return (
-      <div className={`relative w-full h-full flex flex-col items-center justify-end transition-transform duration-200 ease-out ${mode === 'view' ? 'hover:scale-125 hover:-translate-y-2 hover:z-20' : 'hover:scale-110'}`}>
+      <div className="relative w-full h-full flex flex-col items-center justify-end">
         {!statusData.isEmpty && (
           <div className={`absolute top-0 right-1 p-0.5 rounded-full bg-white shadow-md z-10 border border-gray-200 ${statusData.iconColor}`}>
             {statusData.icon}
@@ -1188,7 +1094,7 @@ export default function App() {
       <main className="flex-1 relative overflow-hidden bg-[#faf8f5]" style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
 
         {/* أزرار الزووم */}
-        <div className="absolute top-4 left-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
+        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
           <button onClick={zoomInBtn} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="تكبير">
             <ZoomIn size={20} />
           </button>
@@ -1206,6 +1112,7 @@ export default function App() {
         <div
           ref={containerRef}
           className={`farm-map-canvas w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`} style={{ direction: 'ltr' }}
+          onWheelCapture={handleWheel}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
