@@ -19,6 +19,11 @@ import {
   onSnapshot,
   type Firestore,
 } from 'firebase/firestore';
+import { MapCell } from './farm/MapCell';
+import { InfrastructureLayer } from './farm/InfrastructureLayer';
+import { TreeSymbols } from './farm/TreeGraphics';
+import { GRID, buildKindGrid, kindAt, type KindGrid } from './farm/infrastructure';
+import { VARIETY_ACCENTS } from './farm/treeVisuals';
 
 // ============================================================================
 // Firebase is the source of truth whenever it is configured. Firestore's native
@@ -142,8 +147,6 @@ interface CellData {
 
 type CellsData = Record<string, CellData>;
 
-type Connections = { up: boolean; down: boolean; left: boolean; right: boolean };
-
 const CELL_TYPE_OPTIONS: { type: CellType; emoji: string; label: string }[] = [
   { type: 'tree', emoji: '🌳', label: 'شجرة' },
   { type: 'water_canal', emoji: '💧', label: 'مروى' },
@@ -151,142 +154,6 @@ const CELL_TYPE_OPTIONS: { type: CellType; emoji: string; label: string }[] = [
   { type: 'road', emoji: '🛣️', label: 'طريق' },
   { type: 'spray_tank', emoji: '🛢️', label: 'حوض رش' },
 ];
-
-// ---- مساعد: إيجاد رقم خلية الجار في اتجاه معيّن (لأغراض ربط رسومات المصرف) ----
-function getNeighborId(
-  cellId: string,
-  dir: 'up' | 'down' | 'left' | 'right',
-  rowLabels: string[],
-  colsCount: number
-): string | null {
-  const dashIdx = cellId.lastIndexOf('-');
-  const rowLabel = cellId.slice(0, dashIdx);
-  const col = parseInt(cellId.slice(dashIdx + 1), 10);
-  const rowIdx = rowLabels.indexOf(rowLabel);
-  if (rowIdx === -1 || Number.isNaN(col)) return null;
-
-  let newRowIdx = rowIdx;
-  let newCol = col;
-  if (dir === 'up') newRowIdx -= 1;
-  else if (dir === 'down') newRowIdx += 1;
-  else if (dir === 'left') newCol -= 1;
-  else if (dir === 'right') newCol += 1;
-
-  if (newRowIdx < 0 || newRowIdx >= rowLabels.length || newCol < 1 || newCol > colsCount) return null;
-  return `${rowLabels[newRowIdx]}-${newCol}`;
-}
-
-function getConnections(
-  cellId: string,
-  type: CellType,
-  cellsData: CellsData,
-  rowLabels: string[],
-  colsCount: number
-): Connections {
-  const dirs: Array<'up' | 'down' | 'left' | 'right'> = ['up', 'down', 'left', 'right'];
-  const result: Connections = { up: false, down: false, left: false, right: false };
-  for (const dir of dirs) {
-    const neighborId = getNeighborId(cellId, dir, rowLabels, colsCount);
-    if (neighborId && cellsData[neighborId]?.type === type) {
-      result[dir] = true;
-    }
-  }
-  return result;
-}
-
-// ============================================================================
-// Lightweight natural farm graphics.
-// Keep the map flat and fast, but make mango trees feel organic rather than
-// like perfect circles. Infrastructure fills the tiny grid gaps so adjacent
-// road/drain/water cells read as one continuous strip.
-// ============================================================================
-const MangoTreeSVG = ({
-  fill,
-  isDiseased,
-  isEmpty,
-}: {
-  fill?: string | null;
-  isDiseased?: boolean;
-  isEmpty?: boolean;
-}) => {
-  if (isEmpty) {
-    return (
-      <div className="farm-flat-empty-tree" aria-hidden="true">
-        <span />
-      </div>
-    );
-  }
-
-  const canopy = fill || '#159447';
-  const canopyDark = fill === '#d97706' ? '#a95f04' : fill === '#dc2626' ? '#b91c1c' : '#0f6f38';
-  const outline = fill === '#dc2626' ? '#8f1d1d' : fill === '#d97706' ? '#8d5105' : '#0a5c2e';
-
-  return (
-    <svg
-      className="farm-natural-tree"
-      viewBox="0 0 100 100"
-      role="img"
-      aria-hidden="true"
-      preserveAspectRatio="xMidYMid meet"
-    >
-      {/* One organic silhouette keeps the tree recognizable and lightweight. */}
-      <path
-        d="M48 84 C48 76 46 69 44 63 C37 63 31 59 29 53 C26 47 30 41 36 39 C34 32 39 25 46 24 C48 17 55 13 62 17 C69 13 78 17 80 24 C87 25 92 31 91 38 C97 43 96 51 91 56 C87 61 81 63 74 61 C72 69 67 76 66 84 Z"
-        fill={canopy}
-        stroke={outline}
-        strokeWidth="1.5"
-        strokeLinejoin="round"
-      />
-
-      {/* Subtle internal leaf masses: crisp, flat vector shapes, no filters. */}
-      <path
-        className="tree-detail-layer"
-        d="M38 42 C42 31 51 27 60 28 C68 28 75 32 78 38 C68 34 59 36 52 42 C47 46 43 50 38 50 C35 48 35 45 38 42 Z"
-        fill={canopyDark}
-        opacity="0.22"
-      />
-      <path
-        className="tree-detail-layer"
-        d="M62 22 C68 19 74 21 77 26 C70 25 66 27 61 30 C59 27 59 24 62 22 Z"
-        fill="#ffffff"
-        opacity="0.10"
-      />
-
-      {/* Small tapered trunk. */}
-      <path
-        d="M47 84 C50 72 51 64 53 55 C55 52 60 52 63 55 C60 65 59 74 61 84 Z"
-        fill="#7a4a1c"
-        stroke="#633b15"
-        strokeWidth="0.9"
-        strokeLinejoin="round"
-      />
-
-      {isDiseased && (
-        <circle
-          className="tree-detail-layer"
-          cx="78"
-          cy="39"
-          r="4.2"
-          fill="#7f1d1d"
-          stroke="#ffffff"
-          strokeWidth="1.3"
-        />
-      )}
-    </svg>
-  );
-};
-
-const ConnectedWaterCanalSVG = (_props: { connections: Connections }) => (
-  <div className="farm-flat-infra farm-flat-water" aria-label="مروى" />
-);
-
-const ConnectedDrainageSVG = (_props: { connections: Connections }) => (
-  <div className="farm-flat-infra farm-flat-drainage" aria-label="مصرف" />
-);
-
-const ConnectedRoadSVG = (_props: { connections: Connections }) => (
-  <div className="farm-flat-infra farm-flat-road" aria-label="طريق" />
-);
 
 function LoginPage({
   authInstance,
@@ -516,6 +383,7 @@ export default function App() {
   const [showColNumberMenu, setShowColNumberMenu] = useState(false);
 
   const [isDragging, setIsDragging] = useState(false);
+  const [showLegend, setShowLegend] = useState(false);
   const farmDocumentExistsRef = useRef(false);
 
   const rowLabels = React.useMemo(
@@ -828,6 +696,17 @@ export default function App() {
       wheelDeltaRef.current = 0;
     };
   }, [clampPosition, measureMap, scheduleTransform, stopZoomAnimation]);
+
+  // React registers wheel handlers as passive, so preventDefault() inside them is
+  // ignored (and logs an error on every tick). A native non-passive listener lets
+  // the map really capture the wheel. The map container only exists once loading
+  // has finished and a user is present, so this effect re-runs on those changes.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    container.addEventListener('wheel', handleWheel, { passive: false });
+    return () => container.removeEventListener('wheel', handleWheel);
+  }, [handleWheel, loading, user]);
 
   // Re-measure when the physical grid size changes, without disturbing the
   // user's zoom unless the new dimensions require clamping.
@@ -1281,56 +1160,68 @@ export default function App() {
     }
   };
 
-  const getTreeStatusData = (data: CellData | null) => {
-    if (!data) return { color: null as string | null, isEmpty: true, isDiseased: false, icon: null as React.ReactNode, iconColor: '' };
+  // ---- Connected infrastructure + memoised grid -------------------------------
+  // The kind grid is derived from the stored data on every change, but it is
+  // kept referentially stable while the infrastructure itself is unchanged, so
+  // editing a tree never rebuilds or repaints the road/canal overlay.
+  const kindGridRef = useRef<KindGrid | null>(null);
+  const kindGrid = React.useMemo(() => {
+    const next = buildKindGrid(cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds);
+    if (kindGridRef.current && kindGridRef.current.signature === next.signature) return kindGridRef.current;
+    kindGridRef.current = next;
+    return next;
+  }, [cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds]);
 
-    const isDiseased = data.status === 'مصابة بآفة/مرض' || (!!data.disease && data.disease !== 'لا يوجد');
+  const selectedCellId = mode === 'edit' ? (typePicker?.cellId ?? null) : (isModalOpen ? selectedTree : null);
 
-    if (isDiseased) {
-      return { color: '#dc2626', isEmpty: false, isDiseased: true, icon: <Bug size={12} />, iconColor: 'text-red-600' };
-    }
-    if (data.status === 'تحتاج تقليم') {
-      return { color: '#d97706', isEmpty: false, isDiseased: false, icon: <AlertTriangle size={12} />, iconColor: 'text-amber-600' };
-    }
-    return { color: '#059669', isEmpty: false, isDiseased: false, icon: <Leaf size={12} />, iconColor: 'text-emerald-600' };
-  };
-
-  const renderCellContent = (cellId: string, forcedGapKind?: GapKind) => {
-    const data = cellsData[cellId];
-    const type = data?.type || 'tree';
-
-    // Infrastructure is painted by the cell's full-bleed background so adjacent
-    // road/drain/water cells can touch without visible grid gaps.
-    if (type === 'spray_tank') {
-      return (
-        <div className="farm-spray-tank" aria-label="حوض رش" title="حوض رش">
-          <div className="farm-spray-tank-icon">🛢️</div>
-          <span>حوض رش</span>
+  // Rebuilt only when map data / labels / mode / selection change - never on
+  // pan, zoom, drag or sync-status updates. Each MapCell is itself memoised, so
+  // a single edit re-renders a single cell.
+  const gridCells = React.useMemo(() => (
+    <>
+      {/* صف الأرقام العلوي */}
+      <div className="farm-axis-cell farm-axis-corner mb-2">#</div>
+      {[...Array(colsCount)].map((_, colIndex) => (
+        <div
+          key={`header-${colIndex}`}
+          className={`farm-axis-cell farm-axis-col mb-2 ${colGapKinds[colIndex] ? `farm-axis-${colGapKinds[colIndex]}` : ''}`}
+        >
+          {displayColLabels[colIndex]}
         </div>
-      );
-    }
+      ))}
 
-    if (type === 'water_canal' || type === 'drainage' || type === 'road' || forcedGapKind) {
-      return null;
-    }
-
-    // مساحة الشجرة: تُعتبر "مُدخلة" فقط لو المستخدم حفظ بياناتها فعلاً.
-    const isConfigured = !!data?.lastUpdated;
-    const statusData = getTreeStatusData(isConfigured ? data! : null);
-
-    return (
-      <div className="relative w-full h-full flex flex-col items-center justify-end">
-        {!statusData.isEmpty && (
-          <div className={`farm-tree-status-badge ${statusData.iconColor}`} title="حالة الشجرة">
-            {statusData.icon}
+      {/* صفوف المزرعة */}
+      {rowLabels.map((rowLetter, rowIndex) => (
+        <React.Fragment key={rowLetter}>
+          {/* حرف/رقم الصف المعروض؛ قد يكون فارغاً لصف طريق/مصرف */}
+          <div className={`farm-axis-cell farm-axis-row sticky right-0 z-10 ${rowGapKinds[rowIndex] ? `farm-axis-${rowGapKinds[rowIndex]}` : ''}`}>
+            {displayRowLabels[rowIndex]}
           </div>
-        )}
-        <div className="farm-tree-visual w-full h-[95%]">
-          <MangoTreeSVG fill={statusData.color} isDiseased={statusData.isDiseased} isEmpty={statusData.isEmpty} />
-        </div>
-      </div>
-    );
-  };
+
+          {/* مساحات/خلايا الصف */}
+          {[...Array(colsCount)].map((_, colIndex) => {
+            const cellId = `${rowLetter}-${colIndex + 1}`;
+            const displayCellLabel = displayColLabels[colIndex]
+              ? (displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${displayColLabels[colIndex]}` : displayColLabels[colIndex])
+              : (displayRowLabels[rowIndex] ? displayRowLabels[rowIndex] : '');
+
+            return (
+              <MapCell
+                key={cellId}
+                cellId={cellId}
+                data={cellsData[cellId]}
+                infraKind={kindAt(kindGrid, rowIndex, colIndex)}
+                gapKind={rowGapKinds[rowIndex] || colGapKinds[colIndex] || null}
+                label={displayCellLabel}
+                editMode={mode === 'edit'}
+                selected={selectedCellId === cellId}
+              />
+            );
+          })}
+        </React.Fragment>
+      ))}
+    </>
+  ), [cellsData, rowLabels, colsCount, displayRowLabels, displayColLabels, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
 
   const handleLogout = async () => {
     if (!auth) return;
@@ -1404,6 +1295,7 @@ export default function App() {
               <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-[#059669]"></span> سليمة</div>
               <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-[#d97706]"></span> تقليم</div>
               <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-[#dc2626]"></span> مصابة</div>
+              <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full" style={{ background: 'conic-gradient(from 40deg, #dc2626 0 30%, #d97706 30% 100%)' }}></span> تقليم + مصابة</div>
               <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-gray-400"></span> فارغة</div>
             </div>
           ) : (
@@ -1608,10 +1500,10 @@ export default function App() {
       )}
 
       {/* منطقة الخريطة */}
-      <main className="flex-1 relative overflow-hidden bg-[#faf8f5]" style={{ backgroundImage: 'radial-gradient(#d1d5db 1px, transparent 1px)', backgroundSize: '30px 30px' }}>
+      <main className="flex-1 relative overflow-hidden bg-[#e4e0ce]">
 
         {/* أزرار الزووم */}
-        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 bg-white/90 backdrop-blur p-2 rounded-lg shadow-lg border border-gray-200">
+        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 bg-white p-2 rounded-lg shadow-md border border-gray-200">
           <button onClick={zoomInBtn} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="تكبير">
             <ZoomIn size={20} />
           </button>
@@ -1625,11 +1517,47 @@ export default function App() {
           </button>
         </div>
 
+        {/* دليل الرموز: الأصناف وحالات الشجرة والبنية التحتية */}
+        <div className="absolute bottom-4 right-4 z-10 flex flex-col items-start gap-2" dir="rtl">
+          {showLegend && (
+            <div className="farm-legend-panel" role="dialog" aria-label="دليل الرموز">
+              <div className="farm-legend-title">حالة الشجرة</div>
+              <div className="farm-legend-grid">
+                <span className="farm-legend-item"><i className="farm-legend-dot" style={{ background: '#059669' }} />سليمة</span>
+                <span className="farm-legend-item"><i className="farm-legend-dot" style={{ background: '#d97706' }} />تحتاج تقليم</span>
+                <span className="farm-legend-item"><i className="farm-legend-dot" style={{ background: '#dc2626' }} />مصابة</span>
+                <span className="farm-legend-item"><i className="farm-legend-dot" style={{ background: 'conic-gradient(from 40deg, #dc2626 0 30%, #d97706 30% 100%)' }} />تقليم + مصابة</span>
+              </div>
+              <div className="farm-legend-title">الصنف (علامة صغيرة على الشجرة)</div>
+              <div className="farm-legend-grid">
+                {VARIETY_ACCENTS.map((a) => (
+                  <span key={a.variety} className="farm-legend-item">
+                    <i className="farm-legend-fruit" style={{ background: a.color }} />{a.variety}
+                  </span>
+                ))}
+              </div>
+              <div className="farm-legend-title">البنية التحتية</div>
+              <div className="farm-legend-grid">
+                <span className="farm-legend-item"><i className="farm-legend-swatch" style={{ background: '#4fa3c6' }} />مروى</span>
+                <span className="farm-legend-item"><i className="farm-legend-swatch" style={{ background: '#cdbf9f' }} />طريق</span>
+                <span className="farm-legend-item"><i className="farm-legend-swatch" style={{ background: '#8a9b8f' }} />مصرف</span>
+              </div>
+            </div>
+          )}
+          <button
+            type="button"
+            onClick={() => setShowLegend((v) => !v)}
+            aria-expanded={showLegend}
+            className="farm-legend-btn"
+          >
+            دليل الرموز
+          </button>
+        </div>
+
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          className={`farm-map-canvas w-full h-full touch-none ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`} style={{ direction: 'ltr' }}
-          onWheelCapture={handleWheel}
+          className={`farm-map-canvas w-full h-full touch-none ${isDragging ? 'cursor-grabbing farm-map-dragging' : 'cursor-grab'} ${mode === 'edit' ? 'farm-map-edit' : ''}`} style={{ direction: 'ltr' }}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -1642,74 +1570,20 @@ export default function App() {
           >
             {/* أرضية المزرعة والشبكة */}
             <div
-              className="bg-[#f0eadd] p-6 rounded-xl shadow-2xl border-[6px] border-[#d4c5a9]"
+              className="farm-land"
               style={{
                 display: 'grid',
-                gridTemplateColumns: `50px repeat(${colsCount}, 55px)`,
-                gridAutoRows: '65px',
-                gap: '4px',
+                gridTemplateColumns: `${GRID.labelColW}px repeat(${colsCount}, ${GRID.cellW}px)`,
+                gridAutoRows: `${GRID.cellH}px`,
+                gap: `${GRID.gap}px`,
+                padding: `${GRID.pad}px`,
               }}
             >
-              {/* صف الأرقام العلوي */}
-              <div className="bg-[#d4c5a9] rounded flex items-center justify-center font-bold text-[#5c4e36] shadow-inner mb-2">
-                #
-              </div>
-              {[...Array(colsCount)].map((_, colIndex) => (
-                <div key={`header-${colIndex}`} className="bg-[#e6ddca] rounded flex items-center justify-center font-bold text-[#5c4e36] text-sm mb-2 shadow-sm">
-                  {displayColLabels[colIndex]}
-                </div>
-              ))}
-
-              {/* صفوف المزرعة */}
-              {rowLabels.map((rowLetter, rowIndex) => (
-                <React.Fragment key={rowLetter}>
-                  {/* حرف/رقم الصف المعروض؛ قد يكون فارغاً لصف طريق/مصرف */}
-                  <div className={`rounded flex items-center justify-center font-bold text-[#5c4e36] text-lg sticky right-0 z-10 shadow-sm ${rowGapKinds[rowIndex] === 'road' ? 'bg-stone-300' : rowGapKinds[rowIndex] === 'drainage' ? 'bg-sky-200' : 'bg-[#d4c5a9]'}`}>
-                    {displayRowLabels[rowIndex]}
-                  </div>
-
-                  {/* مساحات/خلايا الصف */}
-                  {[...Array(colsCount)].map((_, colIndex) => {
-                    const cellId = `${rowLetter}-${colIndex + 1}`;
-                    const displayCellLabel = displayColLabels[colIndex]
-                      ? (displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${displayColLabels[colIndex]}` : displayColLabels[colIndex])
-                      : (displayRowLabels[rowIndex] ? displayRowLabels[rowIndex] : '');
-                    const dataForCell = cellsData[cellId];
-                    const cellType = dataForCell?.type || 'tree';
-
-                    const gapKind = rowGapKinds[rowIndex] || colGapKinds[colIndex];
-                    const infrastructureKind: GapKind | 'water' | null =
-                      cellType === 'water_canal' ? 'water' :
-                      cellType === 'drainage' ? 'drainage' :
-                      cellType === 'road' ? 'road' :
-                      gapKind || null;
-                    const isInfrastructure = infrastructureKind !== null;
-
-                    return (
-                      <div
-                        key={cellId}
-                        data-cell-id={cellId}
-                        className={`farm-map-cell relative w-full h-full flex items-center justify-center ${isInfrastructure ? 'farm-map-infrastructure-cell' : ''} ${mode === 'edit' ? 'cursor-pointer hover:bg-white/30' : (cellType === 'tree' ? 'cursor-pointer' : 'cursor-default')}`}
-                        data-infra-kind={isInfrastructure ? infrastructureKind : undefined}
-                        title={mode === 'edit' ? `تعديل: ${cellId}` : (cellType === 'tree' ? `شجرة ${cellId}` : '')}
-                      >
-                        <div
-                          className={`farm-map-infrastructure-fill ${isInfrastructure ? `farm-infra-kind-${infrastructureKind}` : ''}`}
-                          aria-hidden="true"
-                        />
-                        <div className={`relative z-[1] w-full h-full ${isInfrastructure ? 'pointer-events-none' : ''}`}>
-                          {renderCellContent(cellId, !dataForCell?.type ? (gapKind || undefined) : undefined)}
-                        </div>
-
-                        {/* رقم تعريف المساحة */}
-                        <span className="farm-map-cell-label absolute -bottom-1 bg-white/90 border border-gray-200 px-1 rounded-[3px] text-[8px] font-bold text-gray-700 shadow-sm pointer-events-none z-10">
-                          {displayCellLabel}
-                        </span>
-                      </div>
-                    );
-                  })}
-                </React.Fragment>
-              ))}
+              {/* Both are absolutely positioned, so they take no grid cell. The
+                  overlay is first in DOM order so trees/cells paint above it. */}
+              <TreeSymbols />
+              <InfrastructureLayer grid={kindGrid} />
+              {gridCells}
             </div>
           </div>
         </div>
