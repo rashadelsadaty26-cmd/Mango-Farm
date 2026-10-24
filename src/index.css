@@ -76,24 +76,6 @@ body {
     radial-gradient(ellipse 26% 22% at 88% 14%, rgba(205, 185, 140, 0.14), transparent 72%);
 }
 
-/* Mirror the existing farm land as one composition, including the infrastructure
-   SVG. Counter-flip grid items only so row/column labels and cell contents remain
-   readable; layout positions and stored cell identifiers are not rewritten. */
-.farm-land[data-mirror="horizontal"] {
-  transform: scaleX(-1);
-  transform-origin: center center;
-}
-.farm-land[data-mirror="vertical"] {
-  transform: scaleY(-1);
-  transform-origin: center center;
-}
-.farm-land[data-mirror="horizontal"] > :not(svg) {
-  transform: scaleX(-1);
-}
-.farm-land[data-mirror="vertical"] > :not(svg) {
-  transform: scaleY(-1);
-}
-
 /* ---- Coordinates stay, but as quiet axis marks instead of buttons ------------ */
 .farm-axis-cell {
   display: flex;
