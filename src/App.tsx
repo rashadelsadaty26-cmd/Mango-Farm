@@ -20,6 +20,7 @@ import {
   type Firestore,
 } from 'firebase/firestore';
 import { MapCell } from './farm/MapCell';
+import { buildCoordinateMap, parseCellId } from './farm/coordinates';
 import { InfrastructureLayer } from './farm/InfrastructureLayer';
 import { TreeSymbols } from './farm/TreeGraphics';
 import { GRID, buildKindGrid, kindAt, type KindGrid } from './farm/infrastructure';
@@ -391,18 +392,14 @@ export default function App() {
     [rowsCount]
   );
 
-  // Display labels are separate from internal row labels. This lets a physical
-  // row be blank while the following numbered rows shift up to fill the gap.
-  const displayRowLabels = React.useMemo(() => {
-    const hidden = new Set(unlabeledRows);
-    let numberedIndex = 0;
-    return Array.from({ length: rowsCount }, (_, index) => {
-      if (hidden.has(index)) return '';
-      const label = getRowLabel(numberedIndex);
-      numberedIndex += 1;
-      return label;
-    });
-  }, [rowsCount, unlabeledRows]);
+  // Display coordinates are separate from the internal (stored) cell ids. The
+  // numeric row/column numbers and the full "001-012" coordinate are derived from
+  // physical position + which rows/columns are unnumbered; nothing stored changes.
+  const coordMap = React.useMemo(
+    () => buildCoordinateMap(rowsCount, colsCount, unlabeledRows, unlabeledCols),
+    [rowsCount, colsCount, unlabeledRows, unlabeledCols]
+  );
+  const displayRowLabels = coordMap.rowLabels;
 
   const toggleRowNumber = (rowIndex: number) => {
     const exists = unlabeledRows.includes(rowIndex);
@@ -427,18 +424,8 @@ export default function App() {
     persistFarmState(cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, nextKinds, colGapKinds);
   };
 
-  // Display column numbers are separate from physical column indexes so a
-  // physical column can stay blank while the following numbered columns shift
-  // left to continue the visible numbering without changing internal cell IDs.
-  const displayColLabels = React.useMemo(() => {
-    const hidden = new Set(unlabeledCols);
-    let numberedIndex = 0;
-    return Array.from({ length: colsCount }, (_, index) => {
-      if (hidden.has(index)) return '';
-      numberedIndex += 1;
-      return String(numberedIndex);
-    });
-  }, [colsCount, unlabeledCols]);
+  // Column header text comes from the same coordinate map (see above).
+  const displayColLabels = coordMap.colLabels;
 
   const toggleColNumber = (colIndex: number) => {
     const exists = unlabeledCols.includes(colIndex);
@@ -1172,6 +1159,15 @@ export default function App() {
     return next;
   }, [cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds]);
 
+  // Human-readable coordinate of the tree whose modal is open (display only).
+  const selectedTreeCoordinate = React.useMemo(() => {
+    if (!selectedTree) return '';
+    const parsed = parseCellId(selectedTree);
+    const rowIndex = parsed ? rowLabels.indexOf(parsed.rowLabel) : -1;
+    if (!parsed || rowIndex === -1 || parsed.colIndex >= colsCount) return selectedTree;
+    return coordMap.describeAt(rowIndex, parsed.colIndex);
+  }, [selectedTree, rowLabels, colsCount, coordMap]);
+
   const selectedCellId = mode === 'edit' ? (typePicker?.cellId ?? null) : (isModalOpen ? selectedTree : null);
 
   // Rebuilt only when map data / labels / mode / selection change - never on
@@ -1201,9 +1197,9 @@ export default function App() {
           {/* مساحات/خلايا الصف */}
           {[...Array(colsCount)].map((_, colIndex) => {
             const cellId = `${rowLetter}-${colIndex + 1}`;
-            const displayCellLabel = displayColLabels[colIndex]
-              ? (displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${displayColLabels[colIndex]}` : displayColLabels[colIndex])
-              : (displayRowLabels[rowIndex] ? displayRowLabels[rowIndex] : '');
+            // Visible coordinate ("001-012"); empty for cells in an unnumbered row/column.
+            // The stored id above is never derived from it.
+            const displayCellLabel = coordMap.coordinateAt(rowIndex, colIndex) ?? '';
 
             return (
               <MapCell
@@ -1213,6 +1209,7 @@ export default function App() {
                 infraKind={kindAt(kindGrid, rowIndex, colIndex)}
                 gapKind={rowGapKinds[rowIndex] || colGapKinds[colIndex] || null}
                 label={displayCellLabel}
+                coordinate={coordMap.describeAt(rowIndex, colIndex)}
                 editMode={mode === 'edit'}
                 selected={selectedCellId === cellId}
               />
@@ -1221,7 +1218,7 @@ export default function App() {
         </React.Fragment>
       ))}
     </>
-  ), [cellsData, rowLabels, colsCount, displayRowLabels, displayColLabels, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
+  ), [cellsData, rowLabels, colsCount, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
 
   const handleLogout = async () => {
     if (!auth) return;
@@ -1401,7 +1398,7 @@ export default function App() {
                   <div className="fixed inset-0 z-40" onClick={() => setShowColNumberMenu(false)} />
                   <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden w-[250px] max-h-[55vh] overflow-y-auto">
                     <div className="px-3 py-2 bg-stone-50 border-b border-gray-200 text-xs text-gray-600 leading-relaxed">
-                      فعّل «بدون رقم» لأي عمود طريق/مصرف. العمود التالي يأخذ رقم العمود المحذوف ويكمل الترقيم.
+                      فعّل «بدون رقم» لأي عمود طريق/مصرف. العمود التالي يأخذ رقم العمود المحذوف ويكمل الترقيم. تنبيه: تغيير هذا الخيار يعيد ترقيم الأعمدة التي بعده (بيانات الأشجار لا تتغير).
                     </div>
                     {Array.from({ length: colsCount }, (_, colIndex) => {
                       const isUnlabeled = unlabeledCols.includes(colIndex);
@@ -1451,7 +1448,7 @@ export default function App() {
                   <div className="fixed inset-0 z-40" onClick={() => setShowRowNumberMenu(false)} />
                   <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden w-[250px] max-h-[55vh] overflow-y-auto">
                     <div className="px-3 py-2 bg-stone-50 border-b border-gray-200 text-xs text-gray-600 leading-relaxed">
-                      فعّل «بدون رقم» لأي صف طريق/مصرف. الصف التالي يأخذ رقم الصف المحذوف ويكمل الترقيم.
+                      فعّل «بدون رقم» لأي صف طريق/مصرف. الصف التالي يأخذ رقم الصف المحذوف ويكمل الترقيم. تنبيه: تغيير هذا الخيار يعيد ترقيم الصفوف التي بعده (بيانات الأشجار لا تتغير).
                     </div>
                     {rowLabels.map((rowLetter, rowIndex) => {
                       const isUnlabeled = unlabeledRows.includes(rowIndex);
@@ -1462,7 +1459,7 @@ export default function App() {
                             onClick={() => toggleRowNumber(rowIndex)}
                             className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50"
                           >
-                            <span>الصف {rowIndex + 1} ({rowLetter})</span>
+                            <span>الصف {rowIndex + 1}</span>
                             <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
                               {isUnlabeled ? 'بدون رقم' : `رقم ${displayRowLabels[rowIndex]}`}
                             </span>
@@ -1623,7 +1620,7 @@ export default function App() {
             <div className="bg-emerald-800 text-white px-6 py-4 flex justify-between items-center">
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <Leaf size={20} />
-                تعديل الشجرة: {selectedTree}
+                تعديل الشجرة: <span dir="auto" className="tabular-nums">{selectedTreeCoordinate}</span>
               </h2>
               <button
                 onClick={() => setIsModalOpen(false)}
