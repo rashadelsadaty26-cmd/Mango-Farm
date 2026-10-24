@@ -145,6 +145,12 @@ body {
   display: flex;
   align-items: flex-end;
   justify-content: center;
+  width: 100%;
+  /* Leaves a strip at the bottom of the cell for the coordinate label, so a tree
+     can never be drawn over its own (or a neighbour's) label. */
+  height: calc(100% - 11px);
+  /* The wrapper is bottom-aligned, so the strip must be an explicit margin. */
+  margin-bottom: 11px;
 }
 
 .farm-tree-status-badge {
@@ -224,6 +230,8 @@ body {
 .ft-disease { --ft-canopy: #dc2626; --ft-dark: #b91c1c; --ft-outline: #8f1d1d; --ft-dot-display: inline; }
 /* Both: orange stays dominant, a red patch marks the disease. */
 .ft-prune-disease { --ft-canopy: #d97706; --ft-dark: #a95f04; --ft-outline: #8d5105; --ft-patch-display: inline; }
+/* Grafted and uprooted trees: black. (They stay distinct statuses in the data.) */
+.ft-black { --ft-canopy: #111111; --ft-dark: #000000; --ft-outline: #000000; }
 
 /* ---- Water: restrained, lightweight highlight --------------------------------- */
 /* Faint ripple lines drifting along the canal. The animation steps at ~5 fps
@@ -258,7 +266,8 @@ body {
 .farm-map-low-zoom .ft-disease,
 .farm-map-low-zoom .ft-healthy,
 .farm-map-low-zoom .ft-prune,
-.farm-map-low-zoom .ft-prune-disease {
+.farm-map-low-zoom .ft-prune-disease,
+.farm-map-low-zoom .ft-black {
   --ft-dot-display: none;
 }
 .farm-map-low-zoom .farm-map-cell-label,
@@ -305,28 +314,169 @@ body {
 }
 .farm-legend-swatch { width: 16px; height: 10px; border-radius: 3px; flex: none; }
 
-/* حوض الرش في تخطيط المزرعة */
+/* حوض الرش في تخطيط المزرعة: الرسم SVG واحد يتمركز ويتناسب مع الخلية دائماً */
 .farm-spray-tank {
-  width: 88%;
-  height: 88%;
-  border-radius: 12px;
+  width: 100%;
+  height: calc(100% - 11px);
   display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 2px;
-  background: linear-gradient(180deg, #e0f2fe 0%, #bae6fd 100%);
-  border: 2px solid #0284c7;
-  box-shadow: inset 0 0 0 2px rgba(255,255,255,.55), 0 2px 5px rgba(2,132,199,.15);
-  color: #075985;
-  font-size: 10px;
-  font-weight: 800;
+  padding: 2px 3px 0;
+  box-sizing: border-box;
   pointer-events: none;
 }
-.farm-spray-tank-icon {
-  font-size: 20px;
-  line-height: 1;
+.farm-spray-tank svg {
+  display: block;
+  max-width: 100%;
+  max-height: 100%;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
 }
-.farm-spray-tank span {
-  white-space: nowrap;
+.farm-map-low-zoom .farm-spray-label,
+.farm-map-low-zoom .farm-spray-wave,
+.farm-map-low-zoom .farm-spray-drops {
+  display: none;
+}
+
+/* ---- Landmarks (custom farm objects) ------------------------------------------- */
+/* A pointer-transparent layer over the land; only the badges themselves take taps.
+   z-index sits above cell labels / status badges (z 10) and below the viewport UI. */
+.farm-landmark-layer {
+  position: absolute;
+  pointer-events: none;
+  z-index: 12;
+}
+.farm-landmark {
+  position: absolute;
+  width: 20px;
+  height: 20px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1.5px solid #b3a26f;
+  box-shadow: 0 1px 2px rgba(60, 45, 10, 0.28);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  transform: translate(-50%, -50%);
+  transform-origin: center;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+/* Larger invisible hit area: a 20px badge is too small for a finger. */
+.farm-landmark::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 50%;
+}
+.farm-landmark[data-selected="true"] {
+  border-color: #047857;
+  box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.35), 0 1px 2px rgba(60, 45, 10, 0.28);
+}
+/* Saved slot is no longer valid (e.g. a road was drawn next to it): kept, but flagged. */
+.farm-landmark[data-conflict="true"] {
+  border-color: #d97706;
+  border-style: dashed;
+}
+/* Keep badges readable when the map is zoomed far out. */
+.farm-map-low-zoom .farm-landmark { transform: translate(-50%, -50%) scale(1.7); }
+.farm-map-xlow-zoom .farm-landmark { transform: translate(-50%, -50%) scale(2.8); }
+
+/* Placement preview (the slot the user is about to confirm). */
+.farm-landmark-ghost {
+  position: absolute;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  border: 2px dashed #047857;
+  font-size: 15px;
+  line-height: 1;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  animation: farm-ghost-pulse 1.4s ease-in-out infinite;
+}
+.farm-landmark-ghost[data-invalid="true"] { border-color: #dc2626; }
+@keyframes farm-ghost-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(4, 120, 87, 0.45); }
+  50% { box-shadow: 0 0 0 7px rgba(4, 120, 87, 0); }
+}
+.farm-slot-dots { pointer-events: none; }
+.farm-map-low-zoom .farm-slot-dots { display: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .farm-landmark-ghost { animation: none; }
+}
+
+/* ---- Mobile header: collapses on map swipes (phones only, see App.tsx) ----------- */
+/* The wrapper is a transparent pass-through everywhere except small screens, so the
+   desktop header is byte-for-byte the same layout as before. */
+.farm-header-collapse { position: relative; z-index: 20; }
+.farm-header-handle { display: none; }
+@media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
+  .farm-header-collapse {
+    display: grid;
+    grid-template-rows: 1fr;
+    transition: grid-template-rows 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  }
+  .farm-header-collapse-inner {
+    min-height: 0;
+    overflow: hidden;
+    transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 220ms ease;
+    padding-top: env(safe-area-inset-top, 0px);
+    background: #064e3b; /* same as bg-emerald-900 so the safe-area strip matches */
+  }
+  .farm-header-collapse[data-hidden="true"] { grid-template-rows: 0fr; }
+  .farm-header-collapse[data-hidden="true"] .farm-header-collapse-inner {
+    transform: translateY(-100%);
+    opacity: 0;
+    pointer-events: none;
+    /* Removes the hidden controls from the tab order, but only AFTER the slide ends. */
+    visibility: hidden;
+    transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 220ms ease, visibility 0s linear 280ms;
+  }
+  /* The always-available way back, in case no upward swipe is convenient. */
+  .farm-header-handle {
+    display: flex;
+    position: absolute;
+    top: 0;
+    left: 50%;
+    transform: translate(-50%, -120%);
+    opacity: 0;
+    pointer-events: none;
+    z-index: 15;
+    align-items: center;
+    justify-content: center;
+    min-width: 56px;
+    height: 24px;
+    padding: 0 14px;
+    border: 0;
+    border-radius: 0 0 14px 14px;
+    background: rgba(6, 78, 59, 0.92);
+    color: #d1fae5;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+    transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 220ms ease;
+    touch-action: manipulation;
+  }
+  .farm-header-handle[data-visible="true"] {
+    transform: translate(-50%, 0);
+    opacity: 1;
+    pointer-events: auto;
+    top: env(safe-area-inset-top, 0px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .farm-header-collapse,
+  .farm-header-collapse-inner,
+  .farm-header-handle { transition: none !important; }
 }
