@@ -2,9 +2,12 @@
 // Run:  node scripts/verify-farm-rendering.ts      (Node >= 22.18, or --experimental-strip-types)
 import assert from 'node:assert/strict';
 import {
-  buildKindGrid, buildInfraPaths, getConnectionMask, classifyMask, resolveInfraKind, kindAt, N, E, S, W,
+  buildKindGrid, buildInfraPaths, getConnectionMask, classifyMask, resolveInfraKind, kindAt, N, E, S, W, GRID,
 } from '../src/farm/infrastructure.ts';
-import { getTreeHealthFlags, getTreeTone, getVarietyAccent, VARIETY_ACCENTS } from '../src/farm/treeVisuals.ts';
+import {
+  getTreeHealthFlags, getTreeTone, getVarietyAccent, VARIETY_ACCENTS,
+  getRetiredKind, statusLabel, STATUS_GRAFTED, STATUS_UPROOTED, STATUS_NEEDS_PRUNING, TONE_COLORS,
+} from '../src/farm/treeVisuals.ts';
 
 let passed = 0;
 const test = (name: string, fn: () => void) => { fn(); passed++; console.log('  ok  ' + name); };
@@ -130,8 +133,9 @@ test('paths: runs are single polylines, ends reach the cell edge, blocks fill 2x
   const p = buildInfraPaths(run, 'road', 0);
   assert.equal(p.blocks, '');
   assert.equal((p.chains.match(/M/g) || []).length, 1, 'one chain for a straight run');
-  // vertical run of 3 rows x 1 col, 65px rows + 4px gap: from y=0 to y=3*65+2*4=203, x centre 27.5
-  assert.equal(p.chains, 'M27.5 0L27.5 203');
+  // vertical run of 3 rows x 1 col: from y=0 to the bottom of row 3, x at the cell centre.
+  // (Derived from GRID so the check follows the grid metrics instead of hard-coding them.)
+  assert.equal(p.chains, `M${GRID.cellW / 2} 0L${GRID.cellW / 2} ${3 * GRID.cellH + 2 * GRID.gap}`);
   const block = grid(['WW', 'WW']);
   assert.notEqual(buildInfraPaths(block, 'water', 22).blocks, '');
   const bend = grid(['WW', '.W']);
@@ -174,6 +178,47 @@ for (const c of cases) {
     assert.equal(JSON.stringify(c.d), frozen, 'stored values untouched');
   });
 }
+
+console.log('Grafted / uprooted trees are black; labels; stored data untouched');
+test('grafted and uprooted both resolve to the black tone but stay distinct kinds', () => {
+  const grafted = { status: STATUS_GRAFTED, disease: 'لا يوجد' };
+  const uprooted = { status: STATUS_UPROOTED, disease: 'لا يوجد' };
+  assert.equal(getTreeTone(getTreeHealthFlags(grafted)), 'black');
+  assert.equal(getTreeTone(getTreeHealthFlags(uprooted)), 'black');
+  assert.equal(getRetiredKind(grafted.status), 'grafted');
+  assert.equal(getRetiredKind(uprooted.status), 'uprooted');
+  assert.notEqual(STATUS_GRAFTED, STATUS_UPROOTED, 'distinct stored values');
+  assert.equal(TONE_COLORS.black, '#111111');
+});
+test('black wins over a recorded disease / pruning date, but those facts are still reported and not modified', () => {
+  const d = { status: STATUS_GRAFTED, disease: 'عفن هبابي', pruneDate: '2025-01-02' } as Record<string, string>;
+  const frozen = JSON.stringify(d);
+  const flags = getTreeHealthFlags(d);
+  assert.equal(getTreeTone(flags), 'black');
+  assert.equal(flags.diseased, true, 'disease is still reported');
+  assert.equal(JSON.stringify(d), frozen, 'record untouched');
+});
+test('all other statuses keep their existing tones', () => {
+  assert.equal(getRetiredKind('سليمة'), null);
+  assert.equal(getRetiredKind(STATUS_NEEDS_PRUNING), null);
+  assert.equal(getRetiredKind('مصابة بآفة/مرض'), null);
+  assert.equal(getRetiredKind(undefined), null);
+  assert.equal(getTreeTone(getTreeHealthFlags({ status: 'سليمة', disease: 'لا يوجد' })), 'healthy');
+  assert.equal(TONE_COLORS.healthy, '#059669');
+  assert.equal(TONE_COLORS.prune, '#d97706');
+  assert.equal(TONE_COLORS.disease, '#dc2626');
+});
+test('equivalent spellings already in saved data also render black (with/without diacritics)', () => {
+  for (const v of ['مطعّمة', 'مطعمة', 'تم التطعيم']) assert.equal(getRetiredKind(v), 'grafted', v);
+  for (const v of ['مقلوعة', 'مقلوع', 'تم القلع']) assert.equal(getRetiredKind(v), 'uprooted', v);
+});
+test('"تحتاج تقليم" is DISPLAYED as «ضعيفة» but the stored value is unchanged', () => {
+  assert.equal(STATUS_NEEDS_PRUNING, 'تحتاج تقليم', 'stored identifier unchanged');
+  assert.equal(statusLabel(STATUS_NEEDS_PRUNING), 'ضعيفة');
+  assert.equal(statusLabel('سليمة'), 'سليمة');
+  assert.equal(statusLabel('legacy-unknown'), 'legacy-unknown');
+  assert.equal(statusLabel(undefined), '');
+});
 
 console.log('Variety accents');
 test('every stored variety is mapped; unspecified has none; accents are pairwise distinct', () => {
