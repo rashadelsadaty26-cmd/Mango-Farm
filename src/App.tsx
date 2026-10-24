@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
   Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2, Hash,
-  RotateCcw, ArrowLeftRight, ArrowUpDown,
   WifiOff, RefreshCw, CheckCircle2, AlertCircle, LogIn, LogOut, UserRound, LockKeyhole, Eye, EyeOff,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -21,7 +20,6 @@ import {
   type Firestore,
 } from 'firebase/firestore';
 import { MapCell } from './farm/MapCell';
-import { buildCoordinateMap, parseCellId } from './farm/coordinates';
 import { InfrastructureLayer } from './farm/InfrastructureLayer';
 import { TreeSymbols } from './farm/TreeGraphics';
 import { GRID, buildKindGrid, kindAt, type KindGrid } from './farm/infrastructure';
@@ -136,11 +134,6 @@ const DISEASES = ['لا يوجد', 'عفن هبابي', 'ذبابة الفاكه
 
 type CellType = 'tree' | 'water_canal' | 'drainage' | 'road' | 'spray_tank';
 type GapKind = 'road' | 'drainage' | 'gap';
-type MapOrientation = 'original' | 'horizontal' | 'vertical';
-
-function normalizeMapOrientation(value: unknown): MapOrientation {
-  return value === 'horizontal' || value === 'vertical' ? value : 'original';
-}
 
 interface CellData {
   type?: CellType;
@@ -361,7 +354,6 @@ export default function App() {
   const [cellsData, setCellsData] = useState<CellsData>({});
   const [rowsCount, setRowsCount] = useState(DEFAULT_ROWS);
   const [colsCount, setColsCount] = useState(DEFAULT_COLS);
-  const [mapOrientation, setMapOrientation] = useState<MapOrientation>('original');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [syncStatus, setSyncStatus] = useState<'offline' | 'syncing' | 'synced' | 'error'>(
@@ -399,14 +391,18 @@ export default function App() {
     [rowsCount]
   );
 
-  // Display coordinates are separate from the internal (stored) cell ids. The
-  // numeric row/column numbers and the full "001-012" coordinate are derived from
-  // physical position + which rows/columns are unnumbered; nothing stored changes.
-  const coordMap = React.useMemo(
-    () => buildCoordinateMap(rowsCount, colsCount, unlabeledRows, unlabeledCols),
-    [rowsCount, colsCount, unlabeledRows, unlabeledCols]
-  );
-  const displayRowLabels = coordMap.rowLabels;
+  // Display labels are separate from internal row labels. This lets a physical
+  // row be blank while the following numbered rows shift up to fill the gap.
+  const displayRowLabels = React.useMemo(() => {
+    const hidden = new Set(unlabeledRows);
+    let numberedIndex = 0;
+    return Array.from({ length: rowsCount }, (_, index) => {
+      if (hidden.has(index)) return '';
+      const label = getRowLabel(numberedIndex);
+      numberedIndex += 1;
+      return label;
+    });
+  }, [rowsCount, unlabeledRows]);
 
   const toggleRowNumber = (rowIndex: number) => {
     const exists = unlabeledRows.includes(rowIndex);
@@ -431,8 +427,18 @@ export default function App() {
     persistFarmState(cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, nextKinds, colGapKinds);
   };
 
-  // Column header text comes from the same coordinate map (see above).
-  const displayColLabels = coordMap.colLabels;
+  // Display column numbers are separate from physical column indexes so a
+  // physical column can stay blank while the following numbered columns shift
+  // left to continue the visible numbering without changing internal cell IDs.
+  const displayColLabels = React.useMemo(() => {
+    const hidden = new Set(unlabeledCols);
+    let numberedIndex = 0;
+    return Array.from({ length: colsCount }, (_, index) => {
+      if (hidden.has(index)) return '';
+      numberedIndex += 1;
+      return String(numberedIndex);
+    });
+  }, [colsCount, unlabeledCols]);
 
   const toggleColNumber = (colIndex: number) => {
     const exists = unlabeledCols.includes(colIndex);
@@ -725,14 +731,12 @@ export default function App() {
           setCellsData(parsed.cells || {});
           setRowsCount(parsed.rowsCount || DEFAULT_ROWS);
           setColsCount(parsed.colsCount || DEFAULT_COLS);
-          setMapOrientation(normalizeMapOrientation(parsed.orientation));
           setUnlabeledRows(Array.isArray(parsed.unlabeledRows) ? parsed.unlabeledRows.filter((n: unknown) => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(parsed.unlabeledCols) ? parsed.unlabeledCols.filter((n: unknown) => Number.isInteger(n)) : []);
           setRowGapKinds(parsed.rowGapKinds && typeof parsed.rowGapKinds === 'object' ? parsed.rowGapKinds : {});
           setColGapKinds(parsed.colGapKinds && typeof parsed.colGapKinds === 'object' ? parsed.colGapKinds : {});
         } else {
           setCellsData({});
-          setMapOrientation('original');
         }
       } catch (err) {
         console.error('Failed to read local storage', err);
@@ -749,7 +753,6 @@ export default function App() {
       setCellsData({});
       setRowsCount(DEFAULT_ROWS);
       setColsCount(DEFAULT_COLS);
-      setMapOrientation('original');
       setUnlabeledRows([]);
       setUnlabeledCols([]);
       setRowGapKinds({});
@@ -788,7 +791,6 @@ export default function App() {
             setCellsData({});
             setRowsCount(DEFAULT_ROWS);
             setColsCount(DEFAULT_COLS);
-            setMapOrientation('original');
             setUnlabeledRows([]);
             setUnlabeledCols([]);
             setRowGapKinds({});
@@ -801,7 +803,6 @@ export default function App() {
           setCellsData(data.cells || {});
           setRowsCount(data.rowsCount || DEFAULT_ROWS);
           setColsCount(data.colsCount || DEFAULT_COLS);
-          setMapOrientation(normalizeMapOrientation(data.orientation));
           setUnlabeledRows(Array.isArray(data.unlabeledRows) ? data.unlabeledRows.filter((n): n is number => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(data.unlabeledCols) ? data.unlabeledCols.filter((n): n is number => Number.isInteger(n)) : []);
           setRowGapKinds(data.rowGapKinds && typeof data.rowGapKinds === 'object' ? data.rowGapKinds as Record<number, GapKind> : {});
@@ -824,12 +825,10 @@ export default function App() {
             unlabeledCols: [],
             rowGapKinds: {},
             colGapKinds: {},
-            orientation: 'original',
           };
           setCellsData({});
           setRowsCount(DEFAULT_ROWS);
           setColsCount(DEFAULT_COLS);
-          setMapOrientation('original');
           setUnlabeledRows([]);
           setUnlabeledCols([]);
           setRowGapKinds({});
@@ -900,7 +899,6 @@ export default function App() {
     nextUnlabeledCols = unlabeledCols,
     nextRowGapKinds = rowGapKinds,
     nextColGapKinds = colGapKinds,
-    nextOrientation: MapOrientation = mapOrientation,
   ) => {
     const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
     const cleanedUnlabeledCols = nextUnlabeledCols.filter((index) => Number.isInteger(index) && index >= 0 && index < nextCols);
@@ -924,7 +922,6 @@ export default function App() {
     setUnlabeledCols(cleanedUnlabeledCols);
     setRowGapKinds(cleanedRowGapKinds);
     setColGapKinds(cleanedColGapKinds);
-    setMapOrientation(nextOrientation);
 
     const payload = {
       ownerUid: user && 'uid' in user && user.uid !== 'local-user' ? user.uid : undefined,
@@ -935,7 +932,6 @@ export default function App() {
       unlabeledCols: cleanedUnlabeledCols,
       rowGapKinds: cleanedRowGapKinds,
       colGapKinds: cleanedColGapKinds,
-      orientation: nextOrientation,
     };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
@@ -970,7 +966,6 @@ export default function App() {
         if (JSON.stringify(cleanedUnlabeledCols) !== JSON.stringify(unlabeledCols)) updates.unlabeledCols = cleanedUnlabeledCols;
         if (JSON.stringify(cleanedRowGapKinds) !== JSON.stringify(rowGapKinds)) updates.rowGapKinds = cleanedRowGapKinds;
         if (JSON.stringify(cleanedColGapKinds) !== JSON.stringify(colGapKinds)) updates.colGapKinds = cleanedColGapKinds;
-        if (nextOrientation !== mapOrientation) updates.orientation = nextOrientation;
 
         if (changedCells > 400) {
           await setDoc(docRef, payload, { merge: true });
@@ -1003,13 +998,7 @@ export default function App() {
         setSyncStatus('error');
       }
     }
-  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, mapOrientation]);
-
-  const chooseMapOrientation = (orientation: MapOrientation) => {
-    void persistFarmState(
-      cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, orientation
-    );
-  };
+  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds]);
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -1183,15 +1172,6 @@ export default function App() {
     return next;
   }, [cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds]);
 
-  // Human-readable coordinate of the tree whose modal is open (display only).
-  const selectedTreeCoordinate = React.useMemo(() => {
-    if (!selectedTree) return '';
-    const parsed = parseCellId(selectedTree);
-    const rowIndex = parsed ? rowLabels.indexOf(parsed.rowLabel) : -1;
-    if (!parsed || rowIndex === -1 || parsed.colIndex >= colsCount) return selectedTree;
-    return coordMap.describeAt(rowIndex, parsed.colIndex);
-  }, [selectedTree, rowLabels, colsCount, coordMap]);
-
   const selectedCellId = mode === 'edit' ? (typePicker?.cellId ?? null) : (isModalOpen ? selectedTree : null);
 
   // Rebuilt only when map data / labels / mode / selection change - never on
@@ -1221,9 +1201,9 @@ export default function App() {
           {/* مساحات/خلايا الصف */}
           {[...Array(colsCount)].map((_, colIndex) => {
             const cellId = `${rowLetter}-${colIndex + 1}`;
-            // Visible coordinate ("001-012"); empty for cells in an unnumbered row/column.
-            // The stored id above is never derived from it.
-            const displayCellLabel = coordMap.coordinateAt(rowIndex, colIndex) ?? '';
+            const displayCellLabel = displayColLabels[colIndex]
+              ? (displayRowLabels[rowIndex] ? `${displayRowLabels[rowIndex]}-${displayColLabels[colIndex]}` : displayColLabels[colIndex])
+              : (displayRowLabels[rowIndex] ? displayRowLabels[rowIndex] : '');
 
             return (
               <MapCell
@@ -1233,7 +1213,6 @@ export default function App() {
                 infraKind={kindAt(kindGrid, rowIndex, colIndex)}
                 gapKind={rowGapKinds[rowIndex] || colGapKinds[colIndex] || null}
                 label={displayCellLabel}
-                coordinate={coordMap.describeAt(rowIndex, colIndex)}
                 editMode={mode === 'edit'}
                 selected={selectedCellId === cellId}
               />
@@ -1242,7 +1221,7 @@ export default function App() {
         </React.Fragment>
       ))}
     </>
-  ), [cellsData, rowLabels, colsCount, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
+  ), [cellsData, rowLabels, colsCount, displayRowLabels, displayColLabels, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
 
   const handleLogout = async () => {
     if (!auth) return;
@@ -1381,36 +1360,6 @@ export default function App() {
         <div className="bg-amber-100 text-amber-900 px-4 py-2 shadow-sm z-10 border-b border-amber-200 flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-semibold">⚠️ أنت الآن في وضع التخطيط: اضغط على أي مساحة لاختيار نوعها من القائمة</span>
 
-          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-amber-300 bg-white/70 p-1" role="group" aria-label="اتجاه خريطة المزرعة">
-            <button
-              type="button"
-              onClick={() => chooseMapOrientation('original')}
-              aria-pressed={mapOrientation === 'original'}
-              title="Original Orientation (الاتجاه الأصلي)"
-              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${mapOrientation === 'original' ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-transparent bg-white text-gray-700 hover:bg-emerald-50'}`}
-            >
-              <RotateCcw size={14} /> <span>الاتجاه الأصلي</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => chooseMapOrientation('horizontal')}
-              aria-pressed={mapOrientation === 'horizontal'}
-              title="Mirror Left ↔ Right (عكس أفقي)"
-              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${mapOrientation === 'horizontal' ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-transparent bg-white text-gray-700 hover:bg-emerald-50'}`}
-            >
-              <ArrowLeftRight size={14} /> <span>عكس أفقي</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => chooseMapOrientation('vertical')}
-              aria-pressed={mapOrientation === 'vertical'}
-              title="Mirror Top ↕ Bottom (عكس رأسي)"
-              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${mapOrientation === 'vertical' ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-transparent bg-white text-gray-700 hover:bg-emerald-50'}`}
-            >
-              <ArrowUpDown size={14} /> <span>عكس رأسي</span>
-            </button>
-          </div>
-
           <div className="flex items-center gap-2">
             <div className="relative">
               <button
@@ -1452,7 +1401,7 @@ export default function App() {
                   <div className="fixed inset-0 z-40" onClick={() => setShowColNumberMenu(false)} />
                   <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden w-[250px] max-h-[55vh] overflow-y-auto">
                     <div className="px-3 py-2 bg-stone-50 border-b border-gray-200 text-xs text-gray-600 leading-relaxed">
-                      فعّل «بدون رقم» لأي عمود طريق/مصرف. العمود التالي يأخذ رقم العمود المحذوف ويكمل الترقيم. تنبيه: تغيير هذا الخيار يعيد ترقيم الأعمدة التي بعده (بيانات الأشجار لا تتغير).
+                      فعّل «بدون رقم» لأي عمود طريق/مصرف. العمود التالي يأخذ رقم العمود المحذوف ويكمل الترقيم.
                     </div>
                     {Array.from({ length: colsCount }, (_, colIndex) => {
                       const isUnlabeled = unlabeledCols.includes(colIndex);
@@ -1502,7 +1451,7 @@ export default function App() {
                   <div className="fixed inset-0 z-40" onClick={() => setShowRowNumberMenu(false)} />
                   <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden w-[250px] max-h-[55vh] overflow-y-auto">
                     <div className="px-3 py-2 bg-stone-50 border-b border-gray-200 text-xs text-gray-600 leading-relaxed">
-                      فعّل «بدون رقم» لأي صف طريق/مصرف. الصف التالي يأخذ رقم الصف المحذوف ويكمل الترقيم. تنبيه: تغيير هذا الخيار يعيد ترقيم الصفوف التي بعده (بيانات الأشجار لا تتغير).
+                      فعّل «بدون رقم» لأي صف طريق/مصرف. الصف التالي يأخذ رقم الصف المحذوف ويكمل الترقيم.
                     </div>
                     {rowLabels.map((rowLetter, rowIndex) => {
                       const isUnlabeled = unlabeledRows.includes(rowIndex);
@@ -1513,7 +1462,7 @@ export default function App() {
                             onClick={() => toggleRowNumber(rowIndex)}
                             className="w-full flex items-center justify-between gap-3 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50"
                           >
-                            <span>الصف {rowIndex + 1}</span>
+                            <span>الصف {rowIndex + 1} ({rowLetter})</span>
                             <span className={`text-xs px-2 py-0.5 rounded-full ${isUnlabeled ? 'bg-amber-100 text-amber-800' : 'bg-emerald-100 text-emerald-800'}`}>
                               {isUnlabeled ? 'بدون رقم' : `رقم ${displayRowLabels[rowIndex]}`}
                             </span>
@@ -1622,7 +1571,6 @@ export default function App() {
             {/* أرضية المزرعة والشبكة */}
             <div
               className="farm-land"
-              data-mirror={mapOrientation}
               style={{
                 display: 'grid',
                 gridTemplateColumns: `${GRID.labelColW}px repeat(${colsCount}, ${GRID.cellW}px)`,
@@ -1675,7 +1623,7 @@ export default function App() {
             <div className="bg-emerald-800 text-white px-6 py-4 flex justify-between items-center">
               <h2 className="text-xl font-bold flex items-center gap-2">
                 <Leaf size={20} />
-                تعديل الشجرة: <span dir="auto" className="tabular-nums">{selectedTreeCoordinate}</span>
+                تعديل الشجرة: {selectedTree}
               </h2>
               <button
                 onClick={() => setIsModalOpen(false)}
