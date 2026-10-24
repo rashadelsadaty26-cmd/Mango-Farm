@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
   Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2, Hash,
+  RotateCcw, ArrowLeftRight, ArrowUpDown,
   WifiOff, RefreshCw, CheckCircle2, AlertCircle, LogIn, LogOut, UserRound, LockKeyhole, Eye, EyeOff,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -135,6 +136,11 @@ const DISEASES = ['لا يوجد', 'عفن هبابي', 'ذبابة الفاكه
 
 type CellType = 'tree' | 'water_canal' | 'drainage' | 'road' | 'spray_tank';
 type GapKind = 'road' | 'drainage' | 'gap';
+type MapOrientation = 'original' | 'horizontal' | 'vertical';
+
+function normalizeMapOrientation(value: unknown): MapOrientation {
+  return value === 'horizontal' || value === 'vertical' ? value : 'original';
+}
 
 interface CellData {
   type?: CellType;
@@ -355,6 +361,7 @@ export default function App() {
   const [cellsData, setCellsData] = useState<CellsData>({});
   const [rowsCount, setRowsCount] = useState(DEFAULT_ROWS);
   const [colsCount, setColsCount] = useState(DEFAULT_COLS);
+  const [mapOrientation, setMapOrientation] = useState<MapOrientation>('original');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [syncStatus, setSyncStatus] = useState<'offline' | 'syncing' | 'synced' | 'error'>(
@@ -718,12 +725,14 @@ export default function App() {
           setCellsData(parsed.cells || {});
           setRowsCount(parsed.rowsCount || DEFAULT_ROWS);
           setColsCount(parsed.colsCount || DEFAULT_COLS);
+          setMapOrientation(normalizeMapOrientation(parsed.orientation));
           setUnlabeledRows(Array.isArray(parsed.unlabeledRows) ? parsed.unlabeledRows.filter((n: unknown) => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(parsed.unlabeledCols) ? parsed.unlabeledCols.filter((n: unknown) => Number.isInteger(n)) : []);
           setRowGapKinds(parsed.rowGapKinds && typeof parsed.rowGapKinds === 'object' ? parsed.rowGapKinds : {});
           setColGapKinds(parsed.colGapKinds && typeof parsed.colGapKinds === 'object' ? parsed.colGapKinds : {});
         } else {
           setCellsData({});
+          setMapOrientation('original');
         }
       } catch (err) {
         console.error('Failed to read local storage', err);
@@ -740,6 +749,7 @@ export default function App() {
       setCellsData({});
       setRowsCount(DEFAULT_ROWS);
       setColsCount(DEFAULT_COLS);
+      setMapOrientation('original');
       setUnlabeledRows([]);
       setUnlabeledCols([]);
       setRowGapKinds({});
@@ -778,6 +788,7 @@ export default function App() {
             setCellsData({});
             setRowsCount(DEFAULT_ROWS);
             setColsCount(DEFAULT_COLS);
+            setMapOrientation('original');
             setUnlabeledRows([]);
             setUnlabeledCols([]);
             setRowGapKinds({});
@@ -790,6 +801,7 @@ export default function App() {
           setCellsData(data.cells || {});
           setRowsCount(data.rowsCount || DEFAULT_ROWS);
           setColsCount(data.colsCount || DEFAULT_COLS);
+          setMapOrientation(normalizeMapOrientation(data.orientation));
           setUnlabeledRows(Array.isArray(data.unlabeledRows) ? data.unlabeledRows.filter((n): n is number => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(data.unlabeledCols) ? data.unlabeledCols.filter((n): n is number => Number.isInteger(n)) : []);
           setRowGapKinds(data.rowGapKinds && typeof data.rowGapKinds === 'object' ? data.rowGapKinds as Record<number, GapKind> : {});
@@ -812,10 +824,12 @@ export default function App() {
             unlabeledCols: [],
             rowGapKinds: {},
             colGapKinds: {},
+            orientation: 'original',
           };
           setCellsData({});
           setRowsCount(DEFAULT_ROWS);
           setColsCount(DEFAULT_COLS);
+          setMapOrientation('original');
           setUnlabeledRows([]);
           setUnlabeledCols([]);
           setRowGapKinds({});
@@ -886,6 +900,7 @@ export default function App() {
     nextUnlabeledCols = unlabeledCols,
     nextRowGapKinds = rowGapKinds,
     nextColGapKinds = colGapKinds,
+    nextOrientation: MapOrientation = mapOrientation,
   ) => {
     const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
     const cleanedUnlabeledCols = nextUnlabeledCols.filter((index) => Number.isInteger(index) && index >= 0 && index < nextCols);
@@ -909,6 +924,7 @@ export default function App() {
     setUnlabeledCols(cleanedUnlabeledCols);
     setRowGapKinds(cleanedRowGapKinds);
     setColGapKinds(cleanedColGapKinds);
+    setMapOrientation(nextOrientation);
 
     const payload = {
       ownerUid: user && 'uid' in user && user.uid !== 'local-user' ? user.uid : undefined,
@@ -919,6 +935,7 @@ export default function App() {
       unlabeledCols: cleanedUnlabeledCols,
       rowGapKinds: cleanedRowGapKinds,
       colGapKinds: cleanedColGapKinds,
+      orientation: nextOrientation,
     };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
@@ -953,6 +970,7 @@ export default function App() {
         if (JSON.stringify(cleanedUnlabeledCols) !== JSON.stringify(unlabeledCols)) updates.unlabeledCols = cleanedUnlabeledCols;
         if (JSON.stringify(cleanedRowGapKinds) !== JSON.stringify(rowGapKinds)) updates.rowGapKinds = cleanedRowGapKinds;
         if (JSON.stringify(cleanedColGapKinds) !== JSON.stringify(colGapKinds)) updates.colGapKinds = cleanedColGapKinds;
+        if (nextOrientation !== mapOrientation) updates.orientation = nextOrientation;
 
         if (changedCells > 400) {
           await setDoc(docRef, payload, { merge: true });
@@ -985,7 +1003,13 @@ export default function App() {
         setSyncStatus('error');
       }
     }
-  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds]);
+  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, mapOrientation]);
+
+  const chooseMapOrientation = (orientation: MapOrientation) => {
+    void persistFarmState(
+      cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, orientation
+    );
+  };
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -1357,6 +1381,36 @@ export default function App() {
         <div className="bg-amber-100 text-amber-900 px-4 py-2 shadow-sm z-10 border-b border-amber-200 flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm font-semibold">⚠️ أنت الآن في وضع التخطيط: اضغط على أي مساحة لاختيار نوعها من القائمة</span>
 
+          <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-amber-300 bg-white/70 p-1" role="group" aria-label="اتجاه خريطة المزرعة">
+            <button
+              type="button"
+              onClick={() => chooseMapOrientation('original')}
+              aria-pressed={mapOrientation === 'original'}
+              title="Original Orientation (الاتجاه الأصلي)"
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${mapOrientation === 'original' ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-transparent bg-white text-gray-700 hover:bg-emerald-50'}`}
+            >
+              <RotateCcw size={14} /> <span>الاتجاه الأصلي</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => chooseMapOrientation('horizontal')}
+              aria-pressed={mapOrientation === 'horizontal'}
+              title="Mirror Left ↔ Right (عكس أفقي)"
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${mapOrientation === 'horizontal' ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-transparent bg-white text-gray-700 hover:bg-emerald-50'}`}
+            >
+              <ArrowLeftRight size={14} /> <span>عكس أفقي</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => chooseMapOrientation('vertical')}
+              aria-pressed={mapOrientation === 'vertical'}
+              title="Mirror Top ↕ Bottom (عكس رأسي)"
+              className={`flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-bold transition-colors ${mapOrientation === 'vertical' ? 'border-emerald-700 bg-emerald-700 text-white' : 'border-transparent bg-white text-gray-700 hover:bg-emerald-50'}`}
+            >
+              <ArrowUpDown size={14} /> <span>عكس رأسي</span>
+            </button>
+          </div>
+
           <div className="flex items-center gap-2">
             <div className="relative">
               <button
@@ -1568,6 +1622,7 @@ export default function App() {
             {/* أرضية المزرعة والشبكة */}
             <div
               className="farm-land"
+              data-mirror={mapOrientation}
               style={{
                 display: 'grid',
                 gridTemplateColumns: `${GRID.labelColW}px repeat(${colsCount}, ${GRID.cellW}px)`,
