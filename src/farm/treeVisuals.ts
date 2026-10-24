@@ -16,33 +16,90 @@ export interface TreeDataLike {
 export const UNSPECIFIED_VARIETY = 'غير محدد';
 export const STATUS_NEEDS_PRUNING = 'تحتاج تقليم';
 export const STATUS_DISEASED = 'مصابة بآفة/مرض';
+// Two further values of the SAME `status` field. They are drawn identically
+// (black) but stay distinct in storage, so grafted and uprooted can always be
+// told apart in data, filters and exports.
+export const STATUS_GRAFTED = 'مطعمة';
+export const STATUS_UPROOTED = 'مقلوعة';
 export const NO_DISEASE = 'لا يوجد';
+
+/**
+ * DISPLAY labels for stored status values. Only the label changes: the stored
+ * value of the "needs pruning" status stays 'تحتاج تقليم' so existing records,
+ * pruning dates and history are untouched (no migration).
+ */
+export const STATUS_LABELS: Record<string, string> = {
+  [STATUS_NEEDS_PRUNING]: 'ضعيفة',
+};
+
+/** Text shown to the user for a stored status value. Unknown values pass through. */
+export function statusLabel(status: string | undefined): string {
+  if (!status) return '';
+  return STATUS_LABELS[status] ?? status;
+}
+
+// Spellings that mean "grafted" / "uprooted". The canonical constants above are
+// what the app writes; the extra spellings only make the black tone tolerant of
+// equivalent values that may already exist in saved data. Nothing is rewritten.
+const GRAFTED_ALIASES = ['مطعمة', 'مطعم', 'تم التطعيم', 'تطعيم', 'grafted'];
+const UPROOTED_ALIASES = ['مقلوعة', 'مقلوع', 'مقتلعة', 'مجتثة', 'تم القلع', 'قلع', 'uprooted'];
+
+/** Strip Arabic diacritics/tatweel and unify alef/ya/ta-marbuta variants for comparison only. */
+function normalizeStatusText(value: string): string {
+  return value
+    .normalize('NFKC')
+    .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+    .replace(/[أإآ]/g, 'ا')
+    .replace(/ى/g, 'ي')
+    .trim()
+    .toLowerCase();
+}
+const GRAFTED_SET = new Set(GRAFTED_ALIASES.map(normalizeStatusText));
+const UPROOTED_SET = new Set(UPROOTED_ALIASES.map(normalizeStatusText));
+
+export type RetiredKind = 'grafted' | 'uprooted';
+
+/** Which black status (if any) a stored status value represents. */
+export function getRetiredKind(status: string | undefined): RetiredKind | null {
+  if (!status) return null;
+  const key = normalizeStatusText(status);
+  if (GRAFTED_SET.has(key)) return 'grafted';
+  if (UPROOTED_SET.has(key)) return 'uprooted';
+  return null;
+}
 
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
 
-export type TreeTone = 'healthy' | 'prune' | 'disease' | 'prune-disease';
+export type TreeTone = 'healthy' | 'prune' | 'disease' | 'prune-disease' | 'black';
 
 export interface TreeHealthFlags {
   diseased: boolean;
   needsPruning: boolean;
+  /** Grafted / uprooted. Optional so older callers that build flags by hand keep working. */
+  retired?: RetiredKind | null;
 }
 
 /**
- * Two independent facts.
+ * Independent facts.
  *  - diseased: the status says so, OR a disease/pest is recorded
  *  - needsPruning: the status says so
+ *  - retired: the status is grafted / uprooted (drawn black)
  * A tree recorded as "needs pruning" that also has a disease recorded is BOTH.
+ * The disease / pruning facts are still reported for a black tree (the stored
+ * disease and pruning data are never altered); only the canopy colour is black.
  */
 export function getTreeHealthFlags(data: TreeDataLike): TreeHealthFlags {
   return {
     diseased: data.status === STATUS_DISEASED || (!!data.disease && data.disease !== NO_DISEASE),
     needsPruning: data.status === STATUS_NEEDS_PRUNING,
+    retired: getRetiredKind(data.status),
   };
 }
 
 export function getTreeTone(flags: TreeHealthFlags): TreeTone {
+  if (flags.retired) return 'black';
   if (flags.diseased && flags.needsPruning) return 'prune-disease';
   if (flags.diseased) return 'disease';
   if (flags.needsPruning) return 'prune';
@@ -56,6 +113,8 @@ export const TONE_COLORS: Record<TreeTone, string> = {
   disease: '#dc2626',
   // Orange stays dominant; the red lives in a patch on the canopy.
   'prune-disease': '#d97706',
+  // Grafted and uprooted trees.
+  black: '#111111',
 };
 
 export const DISEASE_RED = '#dc2626';

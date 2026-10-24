@@ -21,16 +21,32 @@ export type InfraKind = 'water' | 'road' | 'drainage' | 'gap';
 
 // Physical grid metrics. App.tsx uses the same constants for the CSS grid so the
 // overlay can never drift away from the cells it sits on.
-const CELL_H = 65;
+//
+// Visual metrics ONLY. Cell ids, rows/columns and saved coordinates never depend
+// on these numbers, so changing them re-draws the farm without touching data.
+//
+//   cellW x cellH  the tree cell (larger than before so trees read clearly)
+//   gap            the gutter between neighbouring cells. It is deliberately wide
+//                  enough to hold a small landmark badge (see landmarks.ts).
+const CELL_H = 78;
 export const GRID = {
-  cellW: 55,
+  cellW: 68,
   cellH: CELL_H,
-  gap: 4,
+  gap: 20,
   labelColW: 50,
   // The header row is just the first implicit grid row, so it shares gridAutoRows.
   headerH: CELL_H,
   pad: 24,
 } as const;
+
+/**
+ * The infrastructure stroke widths in InfrastructureLayer were designed for the
+ * original 59px column pitch (55px cell + 4px gap). They are multiplied by this
+ * factor so roads, drains and canals keep exactly the same proportion of a cell
+ * whatever the grid metrics are.
+ */
+export const INFRA_DESIGN_PITCH = 59;
+export const INFRA_SCALE = (GRID.cellW + GRID.gap) / INFRA_DESIGN_PITCH;
 
 /** Top-left of cell (row 0, col 0) relative to the padding box of the land. */
 export const GRID_ORIGIN = {

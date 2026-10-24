@@ -1,10 +1,12 @@
 import React from 'react';
-import { AlertTriangle, Bug, Leaf } from 'lucide-react';
+import { AlertTriangle, Bug, Leaf, X } from 'lucide-react';
 import { MangoTree } from './TreeGraphics';
+import { SprayBasin } from './SprayBasin';
 import type { InfraKind } from './infrastructure';
 import {
-  NO_DISEASE, UNSPECIFIED_VARIETY,
-  getTreeHealthFlags, getTreeTone, getVarietyAccent, type TreeDataLike,
+  NO_DISEASE, STATUS_GRAFTED, STATUS_NEEDS_PRUNING, STATUS_UPROOTED, UNSPECIFIED_VARIETY,
+  getTreeHealthFlags, getTreeTone, getVarietyAccent, statusLabel,
+  type RetiredKind, type TreeDataLike,
 } from './treeVisuals';
 
 export interface MapCellProps {
@@ -22,11 +24,24 @@ export interface MapCellProps {
   selected: boolean;
 }
 
-function StatusBadge({ diseased, needsPruning }: { diseased: boolean; needsPruning: boolean }) {
-  if (diseased && needsPruning) {
-    // Both facts at once: pruning first (dominant), disease second.
+function StatusBadge({
+  diseased, needsPruning, retired,
+}: { diseased: boolean; needsPruning: boolean; retired: RetiredKind | null }) {
+  if (retired) {
+    // Grafted / uprooted: a neutral dark badge. If a disease is still recorded on
+    // the tree it stays visible next to it (the stored data is never hidden).
+    const title = statusLabel(retired === 'grafted' ? STATUS_GRAFTED : STATUS_UPROOTED);
     return (
-      <div className="farm-tree-status-badge farm-tree-status-badge--both" title="تحتاج تقليم ومصابة">
+      <div className={`farm-tree-status-badge ${diseased ? 'farm-tree-status-badge--both' : ''}`} title={diseased ? `${title} — مصابة` : title}>
+        {retired === 'grafted' ? <Leaf size={11} className="text-gray-900" /> : <X size={11} className="text-gray-900" />}
+        {diseased && <Bug size={10} className="text-red-600" />}
+      </div>
+    );
+  }
+  if (diseased && needsPruning) {
+    // Both facts at once: weak/pruning first (dominant), disease second.
+    return (
+      <div className="farm-tree-status-badge farm-tree-status-badge--both" title={`${statusLabel(STATUS_NEEDS_PRUNING)} ومصابة`}>
         <AlertTriangle size={10} className="text-amber-600" />
         <Bug size={10} className="text-red-600" />
       </div>
@@ -44,10 +59,11 @@ function StatusBadge({ diseased, needsPruning }: { diseased: boolean; needsPruni
 
 function describeTree(coordinate: string, data: TreeDataLike | undefined): string {
   if (!data?.lastUpdated) return `شجرة ${coordinate}`;
-  const { diseased, needsPruning } = getTreeHealthFlags(data);
+  const { diseased, needsPruning, retired } = getTreeHealthFlags(data);
   const parts = [`شجرة ${coordinate}`];
   if (data.variety && data.variety !== UNSPECIFIED_VARIETY) parts.push(data.variety);
-  if (needsPruning) parts.push('تحتاج تقليم');
+  // Display label only ("ضعيفة"); the stored status value is unchanged.
+  if (needsPruning || retired) parts.push(statusLabel(data.status));
   if (diseased) parts.push(data.disease && data.disease !== NO_DISEASE ? `مصابة: ${data.disease}` : 'مصابة');
   return parts.join(' — ');
 }
@@ -59,12 +75,7 @@ function MapCellImpl({ cellId, data, infraKind, gapKind, label, coordinate, edit
   let content: React.ReactNode = null;
 
   if (type === 'spray_tank') {
-    content = (
-      <div className="farm-spray-tank" aria-label="حوض رش" title="حوض رش">
-        <div className="farm-spray-tank-icon">🛢️</div>
-        <span>حوض رش</span>
-      </div>
-    );
+    content = <SprayBasin />;
   } else if (type === 'water_canal' || type === 'drainage' || type === 'road' || (!data?.type && gapKind)) {
     // Drawn by the infrastructure layer.
     content = null;
@@ -72,7 +83,7 @@ function MapCellImpl({ cellId, data, infraKind, gapKind, label, coordinate, edit
     // A tree cell counts as "entered" only once the user has saved its data.
     content = (
       <div className="relative w-full h-full flex flex-col items-center justify-end">
-        <div className="farm-tree-visual w-full h-[95%]">
+        <div className="farm-tree-visual">
           <div className="farm-flat-empty-tree" aria-hidden="true"><span /></div>
         </div>
       </div>
@@ -83,8 +94,8 @@ function MapCellImpl({ cellId, data, infraKind, gapKind, label, coordinate, edit
     const tone = getTreeTone(flags);
     content = (
       <div className="relative w-full h-full flex flex-col items-center justify-end">
-        <StatusBadge diseased={flags.diseased} needsPruning={flags.needsPruning} />
-        <div className="farm-tree-visual w-full h-[95%]">
+        <StatusBadge diseased={flags.diseased} needsPruning={flags.needsPruning} retired={flags.retired ?? null} />
+        <div className="farm-tree-visual">
           <MangoTree tone={tone} accent={getVarietyAccent(data.variety)} />
         </div>
       </div>

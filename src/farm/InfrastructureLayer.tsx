@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import {
-  GRID, GRID_ORIGIN, buildGapPath, buildInfraPaths, getOverlaySize,
+  GRID, GRID_ORIGIN, INFRA_SCALE, buildGapPath, buildInfraPaths, getOverlaySize,
   type InfraKind, type InfraPaths, type KindGrid,
 } from './infrastructure';
 
@@ -15,6 +15,7 @@ import {
 // ============================================================================
 
 interface Layer {
+  /** Stroke width in design units; multiplied by INFRA_SCALE when drawn. */
   w: number;
   color: string;
   opacity?: number;
@@ -22,6 +23,8 @@ interface Layer {
   detail?: boolean;
   dash?: string;
   className?: string;
+  /** Drawn on the inset geometry (ends a little short of a dead end = closed headwall). */
+  inner?: boolean;
 }
 
 // ---- Irrigation canal: natural water in a soft, wet bank ----------------------
@@ -39,7 +42,7 @@ const WATER_LAYERS: Layer[] = [
   { w: 11, color: '#ffffff', opacity: 0.15, detail: true, dash: '0 22 1.2 46 1.6 31', className: 'farm-water-flow farm-water-flow--slow' },
 ];
 // Rounded dead ends: cap radius equals half of the widest layer.
-const WATER_CAP = WATER_LAYERS[0].w / 2;
+const WATER_CAP = (WATER_LAYERS[0].w * INFRA_SCALE) / 2;
 
 // ---- Road: compacted earth, crowned centre, worn tracks -----------------------
 const ROAD_LAYERS: Layer[] = [
@@ -51,40 +54,54 @@ const ROAD_LAYERS: Layer[] = [
   { w: 51, color: 'url(#farm-pat-road)', detail: true },
 ];
 
-// ---- Drainage: recessed concrete-lined channel with a damp bed ----------------
+// ---- Drainage: narrow concrete-lined trench -------------------------------------
+// Deliberately different from the other two networks: roads are wide and warm
+// beige, canals are bright blue with ripples, a drain is a NARROW, COOL-GREY
+// lined ditch with a dark floor and a thin damp strip. Outer layers run to the cell edge; "inner" layers stop a
+// wall's thickness short of every dead end, which closes the end with a
+// concrete headwall instead of an open, ragged cut.
+const DRAIN_WALL = 4; // design units: thickness of the headwall at a dead end
 const DRAIN_LAYERS: Layer[] = [
-  { w: 59, color: '#b4bfae', opacity: 0.4 },   // verge
-  { w: 53, color: '#c3cbbd' },                 // concrete lip
-  { w: 47, color: '#7f9085' },                 // inner edge (darker)
-  { w: 40, color: '#728378' },                 // wall shadow
-  { w: 30, color: '#a2b4a8' },                 // bed (lighter than the walls)
-  { w: 11, color: '#4a7c7a', opacity: 0.55 },  // damp blue-green strip
-  { w: 30, color: 'url(#farm-pat-drain)', detail: true },
+  { w: 47, color: '#aab4a6', opacity: 0.34 },            // soil verge fading into the land
+  { w: 39, color: '#d3d6cf' },                           // concrete lining (light)
+  { w: 36, color: '#8f9791' },                           // lining edge line
+  { w: 33, color: '#d3d6cf', inner: true },              // inner rim
+  { w: 29, color: '#4b5a57', inner: true },              // trench wall shadow
+  { w: 23, color: '#667874', inner: true },              // trench floor
+  { w: 11, color: '#86a6a2', opacity: 0.8, inner: true }, // damp strip along the floor
+  // No cross-joint dashes: a fixed dash pattern cannot avoid junction mouths on
+  // chains of arbitrary length, and stray ticks across a junction look broken.
 ];
+const DRAIN_CAP = DRAIN_WALL * INFRA_SCALE;
 
 const GAP_COLOR = '#e0dac4';
 
-function Bands({ paths, layers, roundCaps }: { paths: InfraPaths; layers: Layer[]; roundCaps: boolean }) {
+function Bands({
+  paths, innerPaths, layers, roundCaps,
+}: { paths: InfraPaths; innerPaths?: InfraPaths; layers: Layer[]; roundCaps: boolean }) {
   return (
     <>
-      {layers.map((layer, i) => (
+      {layers.map((layer, i) => {
+        const p = layer.inner && innerPaths ? innerPaths : paths;
+        return (
         <g
           key={i}
           className={layer.detail ? 'farm-infra-detail' : undefined}
           stroke={layer.color}
-          strokeWidth={layer.w}
+          strokeWidth={layer.w * INFRA_SCALE}
           strokeLinejoin="round"
           // Dashed ripple layers must stay butt-capped or the dashes turn into dots.
           strokeLinecap={roundCaps && !layer.dash ? 'round' : 'butt'}
           opacity={layer.opacity}
         >
-          {paths.chains && (
-            <path d={paths.chains} fill="none" strokeDasharray={layer.dash} className={layer.className} />
+          {p.chains && (
+            <path d={p.chains} fill="none" strokeDasharray={layer.dash} className={layer.className} />
           )}
           {/* 2x2+ blocks become a filled body (no ripples/dashes on those). */}
-          {paths.blocks && !layer.dash && <path d={paths.blocks} fill={layer.color} />}
+          {p.blocks && !layer.dash && <path d={p.blocks} fill={layer.color} />}
         </g>
-      ))}
+        );
+      })}
     </>
   );
 }
@@ -93,9 +110,10 @@ export const InfrastructureLayer = React.memo(function InfrastructureLayer({ gri
   // Recomputed only when the infrastructure itself changes (signature), never
   // because a tree was edited.
   const geometry = useMemo(() => {
-    const out: Partial<Record<InfraKind, InfraPaths>> & { gap?: InfraPaths } = {};
+    const out: Partial<Record<InfraKind, InfraPaths>> & { gap?: InfraPaths; drainageInner?: InfraPaths } = {};
     out.gap = { chains: '', blocks: buildGapPath(grid) };
     out.drainage = buildInfraPaths(grid, 'drainage', 0);
+    out.drainageInner = buildInfraPaths(grid, 'drainage', DRAIN_CAP);
     out.road = buildInfraPaths(grid, 'road', 0);
     out.water = buildInfraPaths(grid, 'water', WATER_CAP);
     return out;
@@ -153,7 +171,9 @@ export const InfrastructureLayer = React.memo(function InfrastructureLayer({ gri
       {geometry.gap && geometry.gap.blocks !== '' && (
         <path d={geometry.gap.blocks} fill={GAP_COLOR} opacity="0.85" />
       )}
-      {has(geometry.drainage) && <Bands paths={geometry.drainage!} layers={DRAIN_LAYERS} roundCaps={false} />}
+      {has(geometry.drainage) && (
+        <Bands paths={geometry.drainage!} innerPaths={geometry.drainageInner} layers={DRAIN_LAYERS} roundCaps={false} />
+      )}
       {has(geometry.road) && <Bands paths={geometry.road!} layers={ROAD_LAYERS} roundCaps={false} />}
       {has(geometry.water) && <Bands paths={geometry.water!} layers={WATER_LAYERS} roundCaps />}
     </svg>
