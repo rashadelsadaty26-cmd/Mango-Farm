@@ -16,6 +16,8 @@ export interface MapCellProps {
   /** Row/column gap kind regardless of cell type (blank cells in a gap draw nothing). */
   gapKind: string | null;
   label: string;
+  /** Human-readable coordinate (e.g. "012-007") used in tooltips. Display only - `cellId` stays the storage key. */
+  coordinate: string;
   editMode: boolean;
   selected: boolean;
 }
@@ -40,17 +42,17 @@ function StatusBadge({ diseased, needsPruning }: { diseased: boolean; needsPruni
   );
 }
 
-function describeTree(cellId: string, data: TreeDataLike | undefined): string {
-  if (!data?.lastUpdated) return `شجرة ${cellId}`;
+function describeTree(coordinate: string, data: TreeDataLike | undefined): string {
+  if (!data?.lastUpdated) return `شجرة ${coordinate}`;
   const { diseased, needsPruning } = getTreeHealthFlags(data);
-  const parts = [`شجرة ${cellId}`];
+  const parts = [`شجرة ${coordinate}`];
   if (data.variety && data.variety !== UNSPECIFIED_VARIETY) parts.push(data.variety);
   if (needsPruning) parts.push('تحتاج تقليم');
   if (diseased) parts.push(data.disease && data.disease !== NO_DISEASE ? `مصابة: ${data.disease}` : 'مصابة');
   return parts.join(' — ');
 }
 
-function MapCellImpl({ cellId, data, infraKind, gapKind, label, editMode, selected }: MapCellProps) {
+function MapCellImpl({ cellId, data, infraKind, gapKind, label, coordinate, editMode, selected }: MapCellProps) {
   const type = data?.type || 'tree';
   const isInfra = infraKind !== null;
 
@@ -97,7 +99,7 @@ function MapCellImpl({ cellId, data, infraKind, gapKind, label, editMode, select
       className={`farm-map-cell relative w-full h-full flex items-center justify-center ${isInfra ? 'farm-map-infrastructure-cell' : ''} ${
         editMode ? 'cursor-pointer hover:bg-white/30' : type === 'tree' ? 'cursor-pointer' : 'cursor-default'
       }`}
-      title={editMode ? `تعديل: ${cellId}` : type === 'tree' ? describeTree(cellId, data) : ''}
+      title={editMode ? `تعديل: ${coordinate}` : type === 'tree' ? describeTree(coordinate, data) : ''}
     >
       <div className={`relative z-[1] w-full h-full ${isInfra ? 'pointer-events-none' : ''}`}>{content}</div>
       {label && !isInfra && <span className="farm-map-cell-label">{label}</span>}
