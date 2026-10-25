@@ -15,6 +15,11 @@ import type { TreeTone } from './treeVisuals';
 
 export const TREE_SYMBOL_ID = 'farm-mango-tree';
 
+// The artwork is drawn in a 100x100 space but only occupies x 26..97, y 13..84.
+// Cropping the view to that area (the symbol itself is untouched) lets the canopy
+// fill its cell, so trees are drawn about 40% larger without changing the cell.
+const TREE_VIEWBOX = '20 8 84 80';
+
 // The original organic silhouette and trunk are unchanged.
 const CANOPY_PATH =
   'M48 84 C48 76 46 69 44 63 C37 63 31 59 29 53 C26 47 30 41 36 39 C34 32 39 25 46 24 C48 17 55 13 62 17 C69 13 78 17 80 24 C87 25 92 31 91 38 C97 43 96 51 91 56 C87 61 81 63 74 61 C72 69 67 76 66 84 Z';
@@ -66,7 +71,7 @@ export const MangoTree = React.memo(function MangoTree({
     <svg
       className={`farm-natural-tree ft-${tone}${accent ? ' ft-has-accent' : ''}`}
       style={accent ? ({ '--ft-accent': accent } as React.CSSProperties) : undefined}
-      viewBox="0 0 100 100"
+      viewBox={TREE_VIEWBOX}
       role="img"
       aria-hidden="true"
       preserveAspectRatio="xMidYMid meet"

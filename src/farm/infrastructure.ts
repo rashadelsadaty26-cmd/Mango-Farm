@@ -27,12 +27,13 @@ export type InfraKind = 'water' | 'road' | 'drainage' | 'gap';
 //
 //   cellW x cellH  the tree cell (larger than before so trees read clearly)
 //   gap            the gutter between neighbouring cells. It is deliberately wide
-//                  enough to hold a small landmark badge (see landmarks.ts).
-const CELL_H = 78;
+//                  enough to hold a landmark badge with a clearly readable icon
+//                  (see landmarks.ts / .farm-landmark in index.css).
+const CELL_H = 88;
 export const GRID = {
-  cellW: 68,
+  cellW: 76,
   cellH: CELL_H,
-  gap: 20,
+  gap: 28,
   labelColW: 50,
   // The header row is just the first implicit grid row, so it shares gridAutoRows.
   headerH: CELL_H,
@@ -48,7 +49,11 @@ export const GRID = {
 export const INFRA_DESIGN_PITCH = 59;
 export const INFRA_SCALE = (GRID.cellW + GRID.gap) / INFRA_DESIGN_PITCH;
 
-/** Top-left of cell (row 0, col 0) relative to the padding box of the land. */
+/**
+ * Top-left of cell (row 0, col 0) relative to the padding box of the land in the
+ * ORIGINAL orientation. Use getGridOrigin(orientation) from orientation.ts for
+ * the origin that is actually on screen (mirroring moves the label strips).
+ */
 export const GRID_ORIGIN = {
   left: GRID.pad + GRID.labelColW + GRID.gap,
   top: GRID.pad + GRID.headerH + GRID.gap,

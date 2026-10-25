@@ -17,6 +17,16 @@
 // end of the lattice, so an existing landmark's coordinates never change.
 // Nothing here reads or writes tree records.
 //
+// TYPES vs INSTANCES
+//   A landmark TYPE is a reusable kind of object (name + icon): the built-in
+//   presets below (tap, basin, light pole, utility marker) plus any type the user
+//   creates (stored in `landmarkTypes`, one small record each).
+//   A landmark INSTANCE is one placed object. It has its own stable id and its
+//   own position, and points at its type through `typeId`. It also keeps a copy
+//   of the type's name and icon, so it always renders without any lookup and
+//   farms saved before types existed (no `typeId`) keep working unchanged.
+//   Placing the same type many times creates many independent instances.
+//
 // This file is dependency-free (no React / Firebase) so it can be unit tested
 // in plain Node.
 // ============================================================================
@@ -41,6 +51,12 @@ export interface FarmLandmark {
    * user creates today). Adding new kinds needs no change to tree data.
    */
   kind: string;
+  /**
+   * The landmark type this object is an instance of (a preset id or a custom
+   * type id). Absent on objects saved before types existed; those are grouped
+   * by name + icon (see landmarkTypeKey).
+   */
+  typeId?: string;
   position: SlotPos;
   createdAt: string;
   updatedAt: string;
@@ -50,10 +66,23 @@ export interface FarmLandmark {
 
 export type LandmarkMap = Record<string, FarmLandmark>;
 
+/** A reusable kind of landmark. Instances copy `name` and `icon` when they are placed. */
+export interface LandmarkType {
+  id: string;
+  name: string;
+  icon: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type LandmarkTypeMap = Record<string, LandmarkType>;
+
 export const DEFAULT_LANDMARK_ICON = '📍';
 export const DEFAULT_LANDMARK_KIND = 'custom';
 export const MAX_LANDMARK_NAME = 40;
 export const MAX_LANDMARKS = 500;
+export const MAX_LANDMARK_TYPES = 60;
+export const MAX_LANDMARK_NOTE = 200;
 
 /** Built-in icon choices. The dialog also accepts any custom emoji. */
 export const LANDMARK_ICON_CHOICES: { icon: string; label: string }[] = [
@@ -333,6 +362,7 @@ export function normalizeLandmarks(raw: unknown): LandmarkMap {
       name: v.name.trim().slice(0, MAX_LANDMARK_NAME * 2),
       icon: typeof v.icon === 'string' && v.icon.trim() ? sanitizeIcon(v.icon) : DEFAULT_LANDMARK_ICON,
       kind: typeof v.kind === 'string' && v.kind ? v.kind : DEFAULT_LANDMARK_KIND,
+      ...(typeof v.typeId === 'string' && ID_PATTERN.test(v.typeId) ? { typeId: v.typeId } : {}),
       position,
       createdAt: typeof v.createdAt === 'string' ? v.createdAt : '',
       updatedAt: typeof v.updatedAt === 'string' ? v.updatedAt : '',
@@ -361,4 +391,276 @@ export function stackOffsets(landmarks: FarmLandmark[], step = 12): Record<strin
     group.forEach((lm, i) => { out[lm.id] = (i - (group.length - 1) / 2) * step; });
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// 5. Landmark types: presets, custom types, inventory
+// ---------------------------------------------------------------------------
+
+/** Built-in types. They live in code (never stored), so every farm has them. */
+export const PRESET_LANDMARK_TYPES: readonly LandmarkType[] = [
+  { id: 'preset_tap', name: 'حنفية', icon: '🚰', createdAt: '', updatedAt: '' },
+  { id: 'preset_basin', name: 'حوض ماء', icon: '💧', createdAt: '', updatedAt: '' },
+  { id: 'preset_light_pole', name: 'عمود إنارة', icon: '💡', createdAt: '', updatedAt: '' },
+  { id: 'preset_utility', name: 'علامة مرافق', icon: '📍', createdAt: '', updatedAt: '' },
+];
+
+const presetById = new Map(PRESET_LANDMARK_TYPES.map((t) => [t.id, t]));
+
+/** Small stable hash (djb2) -> base36, used to name a derived type after name + icon. */
+function shortHash(text: string): string {
+  let h = 5381;
+  for (let i = 0; i < text.length; i++) h = ((h * 33) ^ text.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
+/**
+ * The type an instance belongs to. Instances placed from the palette carry a
+ * `typeId`. Older instances (created one-by-one before types existed) match a
+ * preset when their name and icon are the preset's, otherwise they form a type
+ * derived deterministically from their name + icon, so two devices (or a
+ * retried sync) always agree on it.
+ */
+export function landmarkTypeKey(lm: Pick<FarmLandmark, 'typeId' | 'name' | 'icon'>): string {
+  if (lm.typeId) return lm.typeId;
+  const name = lm.name.trim();
+  for (const preset of PRESET_LANDMARK_TYPES) {
+    if (preset.name === name && preset.icon === lm.icon) return preset.id;
+  }
+  return `legacy_${shortHash(`${name}|${lm.icon}`)}`;
+}
+
+export interface LandmarkTypeEntry {
+  id: string;
+  name: string;
+  icon: string;
+  /** preset: built in; custom: created by the user; derived: only known from placed objects. */
+  source: 'preset' | 'custom' | 'derived';
+  /** Number of instances of this type currently placed. */
+  count: number;
+}
+
+/**
+ * Every type the user can place, with how many instances exist:
+ * presets first, then custom types (oldest first), then types known only from
+ * already-placed objects. Counts come from the instances themselves, so they
+ * cannot drift from what is on the map.
+ */
+export function buildLandmarkInventory(landmarks: LandmarkMap, customTypes: LandmarkTypeMap): LandmarkTypeEntry[] {
+  const counts = new Map<string, number>();
+  const firstSeen = new Map<string, FarmLandmark>();
+  for (const lm of Object.values(landmarks)) {
+    const key = landmarkTypeKey(lm);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    if (!firstSeen.has(key)) firstSeen.set(key, lm);
+  }
+
+  const entries: LandmarkTypeEntry[] = PRESET_LANDMARK_TYPES.map((t) => ({
+    id: t.id, name: t.name, icon: t.icon, source: 'preset' as const, count: counts.get(t.id) ?? 0,
+  }));
+  const known = new Set(entries.map((e) => e.id));
+
+  const custom = Object.values(customTypes)
+    .filter((t) => !known.has(t.id))
+    .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '') || (a.id < b.id ? -1 : 1));
+  for (const t of custom) {
+    entries.push({ id: t.id, name: t.name, icon: t.icon, source: 'custom', count: counts.get(t.id) ?? 0 });
+    known.add(t.id);
+  }
+
+  const derived = [...counts.keys()].filter((key) => !known.has(key)).map((key) => {
+    const sample = firstSeen.get(key) as FarmLandmark;
+    return { id: key, name: sample.name, icon: sample.icon, source: 'derived' as const, count: counts.get(key) ?? 0 };
+  });
+  derived.sort((a, b) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1));
+  return [...entries, ...derived];
+}
+
+/** Defensive read of the stored custom types. Malformed entries are skipped, never "repaired". */
+export function normalizeLandmarkTypes(raw: unknown): LandmarkTypeMap {
+  const out: LandmarkTypeMap = {};
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object' || !ID_PATTERN.test(key) || presetById.has(key)) continue;
+    const v = value as Record<string, unknown>;
+    if (typeof v.id === 'string' && v.id !== key) continue;
+    if (typeof v.name !== 'string' || !v.name.trim()) continue;
+    out[key] = {
+      id: key,
+      name: v.name.trim().slice(0, MAX_LANDMARK_NAME * 2),
+      icon: typeof v.icon === 'string' && v.icon.trim() ? sanitizeIcon(v.icon) : DEFAULT_LANDMARK_ICON,
+      createdAt: typeof v.createdAt === 'string' ? v.createdAt : '',
+      updatedAt: typeof v.updatedAt === 'string' ? v.updatedAt : '',
+    };
+  }
+  return out;
+}
+
+/** Collision-free type id (`lt_...`), generated once per type. */
+export function generateLandmarkTypeId(existing: LandmarkTypeMap = {}): string {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const c = (globalThis as { crypto?: { randomUUID?: () => string } }).crypto;
+    const random = c?.randomUUID
+      ? c.randomUUID().replace(/-/g, '').slice(0, 16)
+      : Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    const id = `lt_${random}`;
+    if (!existing[id] && !presetById.has(id)) return id;
+  }
+  return `lt_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+}
+
+export type TypeCreateResult =
+  | { ok: true; type: LandmarkType }
+  | { ok: false; error: string };
+
+/** Validates and builds a new custom type. Names are unique (case-insensitive) across presets and custom types. */
+export function createLandmarkType(
+  rawName: string,
+  rawIcon: string,
+  customTypes: LandmarkTypeMap,
+  nowIso: string,
+): TypeCreateResult {
+  const nameProblem = validateLandmarkName(rawName);
+  if (nameProblem) return { ok: false, error: nameProblem };
+  if (Object.keys(customTypes).length >= MAX_LANDMARK_TYPES) {
+    return { ok: false, error: `وصلت إلى الحد الأقصى (${MAX_LANDMARK_TYPES} نوعاً).` };
+  }
+  const name = rawName.trim();
+  const same = (t: { name: string }) => t.name.trim().toLocaleLowerCase() === name.toLocaleLowerCase();
+  if (PRESET_LANDMARK_TYPES.some(same) || Object.values(customTypes).some(same)) {
+    return { ok: false, error: 'يوجد نوع بنفس الاسم. اختر اسماً مختلفاً أو استخدم النوع الموجود.' };
+  }
+  return {
+    ok: true,
+    type: { id: generateLandmarkTypeId(customTypes), name, icon: sanitizeIcon(rawIcon), createdAt: nowIso, updatedAt: nowIso },
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 6. Placing, moving, deleting INSTANCES (pure; trees are never an input)
+// ---------------------------------------------------------------------------
+
+export type LandmarkChange =
+  | { ok: true; landmarks: LandmarkMap; landmark: FarmLandmark }
+  | { ok: false; reason: SlotBlockReason | 'limit' | 'missing'; message: string };
+
+const fail = (reason: SlotBlockReason | 'limit' | 'missing', message?: string): LandmarkChange => ({
+  ok: false, reason, message: message ?? (reason in SLOT_BLOCK_MESSAGES ? SLOT_BLOCK_MESSAGES[reason as SlotBlockReason] : ''),
+});
+
+/**
+ * Adds ONE new instance of a type at `slot`. The new object gets its own fresh
+ * id; existing objects are never replaced or edited, and the same type can be
+ * placed again and again at different slots.
+ */
+export function placeLandmark(
+  landmarks: LandmarkMap,
+  type: Pick<LandmarkType, 'id' | 'name' | 'icon'>,
+  slot: SlotPos,
+  ctx: Omit<SlotContext, 'landmarks' | 'ignoreId'>,
+  nowIso: string,
+): LandmarkChange {
+  if (Object.keys(landmarks).length >= MAX_LANDMARKS) {
+    return fail('limit', `وصلت إلى الحد الأقصى (${MAX_LANDMARKS} عنصر).`);
+  }
+  const blocked = slotBlockedReason(slot, { ...ctx, landmarks });
+  if (blocked) return fail(blocked);
+  const id = generateLandmarkId(landmarks);
+  const landmark: FarmLandmark = {
+    id,
+    name: type.name,
+    icon: type.icon,
+    kind: DEFAULT_LANDMARK_KIND,
+    typeId: type.id,
+    position: { x: slot.x, y: slot.y },
+    createdAt: nowIso,
+    updatedAt: nowIso,
+  };
+  return { ok: true, landmarks: { ...landmarks, [id]: landmark }, landmark };
+}
+
+/** Moves ONE instance. Its id, type and notes are unchanged; only `position` (and updatedAt) change. */
+export function moveLandmark(
+  landmarks: LandmarkMap,
+  id: string,
+  slot: SlotPos,
+  ctx: Omit<SlotContext, 'landmarks' | 'ignoreId'>,
+  nowIso: string,
+): LandmarkChange {
+  const existing = landmarks[id];
+  if (!existing) return fail('missing', 'العنصر غير موجود.');
+  const blocked = slotBlockedReason(slot, { ...ctx, landmarks, ignoreId: id });
+  if (blocked) return fail(blocked);
+  const landmark: FarmLandmark = { ...existing, position: { x: slot.x, y: slot.y }, updatedAt: nowIso };
+  return { ok: true, landmarks: { ...landmarks, [id]: landmark }, landmark };
+}
+
+/** Removes exactly the instance with this id. Other instances of the same type are untouched. */
+export function deleteLandmark(landmarks: LandmarkMap, id: string): LandmarkMap {
+  if (!(id in landmarks)) return landmarks;
+  const { [id]: _removed, ...rest } = landmarks;
+  return rest;
+}
+
+/** Re-labels ONE instance as another type (name/icon copied from it) and/or edits its note. */
+export function updateLandmark(
+  landmarks: LandmarkMap,
+  id: string,
+  patch: { type?: Pick<LandmarkType, 'id' | 'name' | 'icon'>; note?: string },
+  nowIso: string,
+): LandmarkChange {
+  const existing = landmarks[id];
+  if (!existing) return fail('missing', 'العنصر غير موجود.');
+  const next: FarmLandmark = { ...existing, updatedAt: nowIso };
+  if (patch.type) {
+    next.typeId = patch.type.id;
+    next.name = patch.type.name;
+    next.icon = patch.type.icon;
+  }
+  if (patch.note !== undefined) {
+    const note = patch.note.trim().slice(0, MAX_LANDMARK_NOTE);
+    const meta = { ...(existing.meta ?? {}) };
+    if (note) meta.note = note; else delete meta.note;
+    if (Object.keys(meta).length) next.meta = meta; else delete next.meta;
+  }
+  return { ok: true, landmarks: { ...landmarks, [id]: next }, landmark: next };
+}
+
+// ---------------------------------------------------------------------------
+// 7. Picking a slot from a tap (strict: never guesses across a tree)
+// ---------------------------------------------------------------------------
+
+/**
+ * Classify one axis position. `size` is the tree's extent along the axis, `pitch`
+ * the distance between neighbouring trees. A point inside a tree but within
+ * `slack` of its edge counts as the neighbouring gutter (a fingertip is wider
+ * than a gutter); the middle of a tree stays a tree. Returns null outside the farm.
+ */
+function axisHit(v: number, pitch: number, size: number, count: number, slack: number): { tree: boolean; h: number } | null {
+  if (!Number.isFinite(v) || v < 0 || count < 1) return null;
+  const k = Math.floor(v / pitch);
+  if (k >= count) return null;
+  const offset = v - k * pitch;
+  if (offset <= size) {
+    if (offset < slack && k > 0) return { tree: false, h: 2 * k };
+    if (offset > size - slack && k < count - 1) return { tree: false, h: 2 * (k + 1) };
+    return { tree: true, h: 2 * k + 1 };
+  }
+  if (k >= count - 1) return null; // beyond the last tree
+  return { tree: false, h: 2 * (k + 1) };
+}
+
+/**
+ * The slot under a point (pixels relative to cell (0,0)'s top-left), or null
+ * when the point is on a tree or outside the farm. Unlike pixelToSlot it does
+ * not snap a tap on a tree to a neighbour, so a stray tap can never drop a
+ * landmark somewhere the user did not mean.
+ */
+export function pickSlotAtPixel(px: number, py: number, rows: number, cols: number, slack = 0): SlotPos | null {
+  const sx = Math.max(0, Math.min(slack, GRID.cellW * 0.4));
+  const sy = Math.max(0, Math.min(slack, GRID.cellH * 0.4));
+  const hx = axisHit(px, PITCH_X, GRID.cellW, cols, sx);
+  const hy = axisHit(py, PITCH_Y, GRID.cellH, rows, sy);
+  if (!hx || !hy || (hx.tree && hy.tree)) return null;
+  return { x: hx.h, y: hy.h };
 }

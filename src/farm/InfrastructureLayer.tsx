@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import {
-  GRID, GRID_ORIGIN, INFRA_SCALE, buildGapPath, buildInfraPaths, getOverlaySize,
+  GRID, INFRA_SCALE, buildGapPath, buildInfraPaths, getOverlaySize,
   type InfraKind, type InfraPaths, type KindGrid,
 } from './infrastructure';
 
@@ -106,7 +106,9 @@ function Bands({
   );
 }
 
-export const InfrastructureLayer = React.memo(function InfrastructureLayer({ grid }: { grid: KindGrid }) {
+export const InfrastructureLayer = React.memo(function InfrastructureLayer({
+  grid, origin,
+}: { grid: KindGrid; /** Where cell (0,0) is drawn (orientation dependent, see getGridOrigin). */ origin: { left: number; top: number } }) {
   // Recomputed only when the infrastructure itself changes (signature), never
   // because a tree was edited.
   const geometry = useMemo(() => {
@@ -133,8 +135,8 @@ export const InfrastructureLayer = React.memo(function InfrastructureLayer({ gri
       viewBox={`0 0 ${width} ${height}`}
       style={{
         position: 'absolute',
-        left: GRID_ORIGIN.left,
-        top: GRID_ORIGIN.top,
+        left: origin.left,
+        top: origin.top,
         overflow: 'visible',
         pointerEvents: 'none',
         zIndex: 0,

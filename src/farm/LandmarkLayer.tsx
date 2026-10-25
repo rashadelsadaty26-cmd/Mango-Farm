@@ -1,15 +1,20 @@
 import React, { useMemo } from 'react';
-import { GRID, GRID_ORIGIN, getOverlaySize } from './infrastructure';
+import { getOverlaySize, type KindGrid } from './infrastructure';
+import { mirrorSlot, type MapOrientation } from './orientation';
 import {
-  PITCH_X, PITCH_Y, slotToPixel, stackOffsets,
-  type FarmLandmark, type LandmarkMap, type SlotPos,
+  isTreeCenter, slotBlockedReason, slotKey, slotToPixel, stackOffsets,
+  type FarmLandmark, type LandmarkMap,
 } from './landmarks';
 
 // ============================================================================
 // Landmarks are drawn in ONE absolutely-positioned layer over the land, using
-// the same origin as the infrastructure SVG (GRID_ORIGIN). They are not grid
-// cells, so they take no tree slot and cannot shift a tree. Because the layer
-// lives inside the pan/zoom surface, positions stay exact while zooming/panning.
+// the same origin as the infrastructure SVG. They are not grid cells, so they
+// take no tree slot and cannot shift a tree. Because the layer lives inside the
+// pan/zoom surface, positions stay exact while zooming/panning.
+//
+// Positions are stored on the LOGICAL slot lattice. Mirroring only changes where
+// a slot is drawn (mirrorSlot), so a landmark always sits between the same two
+// trees whatever the orientation.
 //
 // The layer itself ignores pointers; only each badge is tappable. The existing
 // map gesture handler resolves a tap with elementFromPoint(), so a badge is
@@ -20,14 +25,18 @@ export interface LandmarkLayerProps {
   landmarks: LandmarkMap;
   rows: number;
   cols: number;
+  orientation: MapOrientation;
+  /** Where cell (0,0) is drawn (see getGridOrigin). */
+  origin: { left: number; top: number };
   selectedId: string | null;
   /** Ids whose slot is no longer valid (e.g. a road was drawn next to them). */
   conflictIds: ReadonlySet<string>;
-  /** While choosing a location: show the tentative slot, and faint dots on every slot. */
+  /** While placing/moving: a dot on every slot that can actually be used. */
   placing: boolean;
-  ghost: { slot: SlotPos; icon: string; valid: boolean } | null;
-  /** The landmark being moved is hidden from its old slot while the ghost shows the new one. */
-  hiddenId: string | null;
+  /** Connected infrastructure (LOGICAL layout); decides which slots are usable. */
+  kindGrid: KindGrid | null;
+  /** The object being moved (its own slot stays available). */
+  movingId?: string | null;
 }
 
 const Badge = React.memo(function Badge({
@@ -51,66 +60,63 @@ const Badge = React.memo(function Badge({
 });
 
 export const LandmarkLayer = React.memo(function LandmarkLayer({
-  landmarks, rows, cols, selectedId, conflictIds, placing, ghost, hiddenId,
+  landmarks, rows, cols, orientation, origin, selectedId, conflictIds, placing, kindGrid, movingId = null,
 }: LandmarkLayerProps) {
-  const list = useMemo(
-    () => Object.values(landmarks).filter((lm) => lm.id !== hiddenId),
-    [landmarks, hiddenId],
-  );
+  const list = useMemo(() => Object.values(landmarks), [landmarks]);
   const offsets = useMemo(() => stackOffsets(list), [list]);
+  // Display position of every landmark: computed only when the landmarks, the
+  // farm size or the orientation change, never while zooming or panning.
+  const placed = useMemo(
+    () => list.map((lm) => {
+      const p = slotToPixel(mirrorSlot(lm.position, rows, cols, orientation));
+      return { lm, x: p.x + (offsets[lm.id] ?? 0), y: p.y };
+    }),
+    [list, offsets, rows, cols, orientation],
+  );
+  // One <path> of small circles, one per slot the user may tap right now: not a tree,
+  // inside the farm, not beside a road/drain, not already taken. Recomputed only
+  // while placing and only when the farm, its infrastructure or the landmarks change.
+  const slotDots = useMemo(() => {
+    if (!placing) return '';
+    const taken = new Set(list.filter((lm) => lm.id !== movingId).map((lm) => slotKey(lm.position)));
+    const r = 3;
+    let d = '';
+    for (let x = 1; x <= 2 * cols - 1; x++) {
+      for (let y = 1; y <= 2 * rows - 1; y++) {
+        if (isTreeCenter({ x, y }) || taken.has(slotKey({ x, y }))) continue;
+        if (slotBlockedReason({ x, y }, { rows, cols, grid: kindGrid, landmarks: {} })) continue;
+        const p = slotToPixel(mirrorSlot({ x, y }, rows, cols, orientation));
+        d += `M${p.x - r} ${p.y}a${r} ${r} 0 1 0 ${2 * r} 0a${r} ${r} 0 1 0 ${-2 * r} 0`;
+      }
+    }
+    return d;
+  }, [placing, list, movingId, rows, cols, kindGrid, orientation]);
   const { width, height } = getOverlaySize(rows, cols);
 
-  if (list.length === 0 && !placing && !ghost) return null;
-
-  const ghostPx = ghost ? slotToPixel(ghost.slot) : null;
+  if (list.length === 0 && !placing) return null;
 
   return (
     <div
       className="farm-landmark-layer"
-      style={{ left: GRID_ORIGIN.left, top: GRID_ORIGIN.top, width, height }}
+      style={{ left: origin.left, top: origin.top, width, height }}
       data-landmark-layer="true"
     >
       {placing && (
-        // Every valid slot as a faint dot, from one tiled <pattern> (no per-slot DOM).
         <svg className="farm-slot-dots" width={width} height={height} aria-hidden="true" focusable="false" style={{ position: 'absolute', left: 0, top: 0 }}>
-          <defs>
-            <pattern id="farm-slot-pattern" width={PITCH_X} height={PITCH_Y} patternUnits="userSpaceOnUse">
-              {/* vertical gutter (between two neighbours in a row) */}
-              <circle cx={PITCH_X - GRID.gap / 2} cy={GRID.cellH / 2} r="2.4" fill="#047857" opacity="0.55" />
-              {/* horizontal gutter (between two rows) */}
-              <circle cx={GRID.cellW / 2} cy={PITCH_Y - GRID.gap / 2} r="2.4" fill="#047857" opacity="0.55" />
-              {/* intersection of four trees */}
-              <circle cx={PITCH_X - GRID.gap / 2} cy={PITCH_Y - GRID.gap / 2} r="2.4" fill="#047857" opacity="0.55" />
-            </pattern>
-          </defs>
-          <rect x="0" y="0" width={width} height={height} fill="url(#farm-slot-pattern)" />
+          <path d={slotDots} fill="#047857" opacity="0.65" />
         </svg>
       )}
 
-      {list.map((lm) => {
-        const p = slotToPixel(lm.position);
-        return (
-          <Badge
-            key={lm.id}
-            landmark={lm}
-            left={p.x + (offsets[lm.id] ?? 0)}
-            top={p.y}
-            selected={selectedId === lm.id}
-            conflict={conflictIds.has(lm.id)}
-          />
-        );
-      })}
-
-      {ghost && ghostPx && (
-        <div
-          className="farm-landmark-ghost"
-          data-invalid={ghost.valid ? undefined : 'true'}
-          style={{ left: ghostPx.x, top: ghostPx.y }}
-          aria-hidden="true"
-        >
-          <span>{ghost.icon}</span>
-        </div>
-      )}
+      {placed.map(({ lm, x, y }) => (
+        <Badge
+          key={lm.id}
+          landmark={lm}
+          left={x}
+          top={y}
+          selected={selectedId === lm.id}
+          conflict={conflictIds.has(lm.id)}
+        />
+      ))}
     </div>
   );
 });
