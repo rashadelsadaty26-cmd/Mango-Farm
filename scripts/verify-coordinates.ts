@@ -2,7 +2,7 @@
 // Run:  node scripts/verify-coordinates.ts      (Node >= 22.18, or --experimental-strip-types)
 import assert from 'node:assert/strict';
 import {
-  buildAxisNumbers, buildCoordinateMap, formatCoordinate, padCoordPart, parseCellId,
+  buildAxisNumbers, buildCoordinateMap, columnDigits, formatColumnNumber, formatCoordinate, formatRowNumber, parseCellId,
 } from '../src/farm/coordinates.ts';
 
 let passed = 0;
@@ -23,28 +23,41 @@ const allCoords = (rows: number, cols: number, ur: number[] = [], uc: number[] =
 };
 
 console.log('Format');
-test('zero padding to 3 digits, larger numbers grow, invalid -> empty', () => {
-  assert.equal(padCoordPart(1), '001'); assert.equal(padCoordPart(12), '012');
-  assert.equal(padCoordPart(999), '999'); assert.equal(padCoordPart(1000), '1000');
-  assert.equal(padCoordPart(0), ''); assert.equal(padCoordPart(-3), ''); assert.equal(padCoordPart(1.5), '');
+test('rows have no leading zeros, columns are zero-padded, invalid -> empty', () => {
+  assert.equal(formatRowNumber(1), '1'); assert.equal(formatRowNumber(10), '10'); assert.equal(formatRowNumber(25), '25');
+  assert.equal(formatRowNumber(0), ''); assert.equal(formatRowNumber(-3), ''); assert.equal(formatRowNumber(1.5), '');
+  assert.equal(formatColumnNumber(1), '01'); assert.equal(formatColumnNumber(9), '09'); assert.equal(formatColumnNumber(10), '10'); assert.equal(formatColumnNumber(22), '22');
+  assert.equal(formatColumnNumber(10, 3), '010'); assert.equal(formatColumnNumber(22, 3), '022'); assert.equal(formatColumnNumber(0), '');
 });
-test('spec examples: 001-001, 001-012, 012-007, 030-060', () => {
+test('column width is consistent and grows only when the farm needs it (min 2)', () => {
+  assert.equal(columnDigits(0), 2); assert.equal(columnDigits(9), 2); assert.equal(columnDigits(60), 2); assert.equal(columnDigits(99), 2);
+  assert.equal(columnDigits(100), 3); assert.equal(columnDigits(120), 3);
+  const wide = buildCoordinateMap(3, 120, [], []);
+  assert.equal(wide.colDigits, 3); assert.ok(wide.colLabels.every((l) => l.length === 3));
+  assert.equal(wide.colLabels[9], '010'); assert.equal(wide.colLabels[21], '022'); assert.equal(wide.coordinateAt(2, 119), '3-120');
+  const normal = buildCoordinateMap(30, 60, [], []); assert.ok(normal.colLabels.every((l) => l.length === 2));
+});
+test('examples: 1-01, 1-12, 12-07, 30-60 (and row 1 / column 01 can never be confused)', () => {
   const { m } = allCoords(30, 60);
-  assert.equal(m.coordinateAt(0, 0), '001-001');
-  assert.equal(m.coordinateAt(0, 11), '001-012');
-  assert.equal(m.coordinateAt(11, 6), '012-007');
-  assert.equal(m.coordinateAt(29, 59), '030-060');
+  assert.equal(m.coordinateAt(0, 0), '1-01');
+  assert.equal(m.coordinateAt(0, 11), '1-12');
+  assert.equal(m.coordinateAt(11, 6), '12-07');
+  assert.equal(m.coordinateAt(29, 59), '30-60');
   assert.equal(formatCoordinate(null, 5), null);
+  // Parsing "<row>-<col>" back is unambiguous: the row never has a leading zero, the column always has the farm's width.
+  const all = allCoords(30, 60).out;
+  for (const c of all) assert.match(c, /^[1-9]\d*-\d{2}$/);
 });
 
 console.log('Boundaries');
 test('rows 9/10 and columns 9/10 and the final row/column', () => {
   const { m } = allCoords(30, 60);
-  assert.equal(m.coordinateAt(8, 8), '009-009');
-  assert.equal(m.coordinateAt(8, 9), '009-010');
-  assert.equal(m.coordinateAt(9, 8), '010-009');
-  assert.equal(m.coordinateAt(9, 9), '010-010');
-  assert.equal(m.rowLabels[29], '030'); assert.equal(m.colLabels[59], '060');
+  assert.equal(m.coordinateAt(8, 8), '9-09');
+  assert.equal(m.coordinateAt(8, 9), '9-10');
+  assert.equal(m.coordinateAt(9, 8), '10-09');
+  assert.equal(m.coordinateAt(9, 9), '10-10');
+  assert.equal(m.rowLabels[29], '30'); assert.equal(m.colLabels[59], '60');
+  assert.equal(m.rowLabels[0], '1'); assert.equal(m.colLabels[0], '01');
 });
 
 console.log('Uniqueness');
@@ -78,20 +91,20 @@ test('spec example: 8, 9, [blank], 10, 11 for rows and for columns', () => {
   const n = buildAxisNumbers(12, [8]); // physical index 8 is the blank one
   assert.deepEqual(n.slice(6, 11), [7, 8, null, 9, 10]);
   const m = buildCoordinateMap(12, 12, [9], [9]); // blank is the 10th physical row/column
-  assert.deepEqual(m.rowLabels.slice(7, 12), ['008', '009', '', '010', '011']);
-  assert.deepEqual(m.colLabels.slice(7, 12), ['008', '009', '', '010', '011']);
-  assert.equal(m.coordinateAt(10, 10), '010-010'); // physically row/col 11, visibly 10
+  assert.deepEqual(m.rowLabels.slice(7, 12), ['8', '9', '', '10', '11']);
+  assert.deepEqual(m.colLabels.slice(7, 12), ['08', '09', '', '10', '11']);
+  assert.equal(m.coordinateAt(10, 10), '10-10'); // physically row/col 11, visibly 10
 });
 test('trees BEFORE an unnumbered row/column keep their coordinate; only later ones continue the sequence', () => {
   const before = buildCoordinateMap(30, 60, [], []);
   const after = buildCoordinateMap(30, 60, [14], [29]);
   for (let r = 0; r < 14; r++) for (let c = 0; c < 29; c++) assert.equal(after.coordinateAt(r, c), before.coordinateAt(r, c));
-  assert.equal(after.coordinateAt(15, 30), '015-030'); // physical (16, 31) continues from the blank
+  assert.equal(after.coordinateAt(15, 30), '15-30'); // physical (16, 31) continues from the blank
 });
 test('describeAt falls back to the physical position for an unnumbered cell', () => {
   const m = buildCoordinateMap(10, 10, [4], []);
   assert.equal(m.describeAt(4, 2), 'صف 5 · عمود 3 (بدون رقم)');
-  assert.equal(m.describeAt(0, 0), '001-001');
+  assert.equal(m.describeAt(0, 0), '1-01');
 });
 
 console.log('Adding rows / columns');
@@ -102,7 +115,7 @@ test('appending rows/columns never changes an existing coordinate and never dupl
   for (let r = 0; r < 30; r++) for (let c = 0; c < 60; c++) assert.equal(grown.coordinateAt(r, c), base.coordinateAt(r, c));
   const all = allCoords(33, 64, ur, uc).out;
   assert.equal(new Set(all).size, all.length);
-  assert.equal(grown.coordinateAt(32, 63), '032-063');
+  assert.equal(grown.coordinateAt(32, 63), '32-63');
 });
 test('an unnumbered index beyond the grid size is harmless', () => {
   const { out } = allCoords(5, 5, [99], [-1]);
