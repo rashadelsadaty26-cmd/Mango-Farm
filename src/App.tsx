@@ -22,18 +22,26 @@ import {
 import { MapCell } from './farm/MapCell';
 import { buildCoordinateMap, parseCellId } from './farm/coordinates';
 import { InfrastructureLayer } from './farm/InfrastructureLayer';
+import { EditGridOverlay } from './farm/EditGridOverlay';
 import { TreeSymbols } from './farm/TreeGraphics';
-import { GRID, GRID_ORIGIN, buildKindGrid, kindAt, type KindGrid } from './farm/infrastructure';
+import { GRID, buildKindGrid, kindAt, type KindGrid } from './farm/infrastructure';
+import {
+  ORIENTATION_OPTIONS, displayOrder, flipsColumns, flipsRows, getGridOrigin, mirrorKindGrid, mirrorSlot,
+  normalizeOrientation, type MapOrientation,
+} from './farm/orientation';
+import { clampView, computeFitView } from './farm/viewport';
 import {
   STATUS_GRAFTED, STATUS_NEEDS_PRUNING, STATUS_UPROOTED, TONE_COLORS, VARIETY_ACCENTS, statusLabel,
 } from './farm/treeVisuals';
 import { LandmarkLayer } from './farm/LandmarkLayer';
-import { DeleteLandmarkConfirm, LandmarkDialog, PlacementBar, type LandmarkDraft } from './farm/LandmarkDialog';
 import {
-  DEFAULT_LANDMARK_ICON, DEFAULT_LANDMARK_KIND, MAX_LANDMARKS, SLOT_BLOCK_MESSAGES,
-  describeSlot, generateLandmarkId, normalizeLandmarks, pixelToSlot, sanitizeIcon, slotBlockedReason,
-  validateLandmarkName,
-  type FarmLandmark, type LandmarkMap, type SlotPos,
+  DeleteLandmarkConfirm, LandmarkDetailsDialog, LandmarkPalette, PlacementBar, type PlacedItem,
+} from './farm/LandmarkDialog';
+import {
+  SLOT_BLOCK_MESSAGES, buildLandmarkInventory, createLandmarkType, deleteLandmark as removeLandmark, describeSlot,
+  landmarkTypeKey, moveLandmark, normalizeLandmarkTypes, normalizeLandmarks, pickSlotAtPixel, placeLandmark,
+  slotBlockedReason, updateLandmark,
+  type LandmarkMap, type LandmarkTypeMap,
 } from './farm/landmarks';
 
 // ============================================================================
@@ -175,10 +183,22 @@ const MOBILE_LAYOUT_QUERY = '(max-width: 767px), (pointer: coarse) and (max-heig
 // Vertical finger travel needed before the header reacts; prevents flicker from
 // tiny movements while panning the map.
 const HEADER_SWIPE_THRESHOLD = 28;
+// Duration of the hide/reveal slide. MUST equal --farm-header-ms in index.css
+// (the stylesheet is the single source of truth for the animation; this copy only
+// tells the map how long to keep following the header's moving edge).
+// It was 280ms; the slide is now three times slower (840ms).
+const HEADER_ANIM_MS = 840;
+// A toggle that arrives while the previous slide has barely started is ignored, so
+// a quick back-and-forth wobble cannot start overlapping slides.
+const HEADER_TOGGLE_COOLDOWN_MS = 320;
 // Standard "collapsing toolbar" convention: dragging the map content UP (like
 // scrolling down a page) hides the header; dragging it DOWN (scrolling up)
 // reveals it. Set to false to invert.
 const HIDE_HEADER_WHEN_FINGER_MOVES_UP = true;
+
+// Zoom limits of the pan/zoom surface (unchanged).
+const MIN_SCALE = 0.15;
+const MAX_SCALE = 3;
 
 function useIsMobileLayout(): boolean {
   const [matches, setMatches] = useState(() =>
@@ -424,25 +444,40 @@ export default function App() {
   const [showRowNumberMenu, setShowRowNumberMenu] = useState(false);
   const [showColNumberMenu, setShowColNumberMenu] = useState(false);
 
-  const [isDragging, setIsDragging] = useState(false);
   const [showLegend, setShowLegend] = useState(false);
   const farmDocumentExistsRef = useRef(false);
 
-  // ---- Landmarks (custom farm objects). Stored in their own map on the farm
-  // document, keyed by stable id; never mixed into `cells` (the tree records).
+  // ---- Map orientation (mirroring). A DISPLAY choice only: logical rows, columns,
+  // cell ids and landmark slots never change (see farm/orientation.ts).
+  const [orientation, setOrientation] = useState<MapOrientation>('original');
+
+  // ---- Landmarks. Instances live in their own map on the farm document, keyed by
+  // stable id, and custom types in `landmarkTypes`; neither is ever mixed into
+  // `cells` (the tree records).
   const [landmarks, setLandmarks] = useState<LandmarkMap>({});
-  const [landmarkDraft, setLandmarkDraft] = useState<LandmarkDraft | null>(null);
-  const [landmarkError, setLandmarkError] = useState('');
-  // Non-null while the user is tapping the map to choose a slot.
-  const [placing, setPlacing] = useState<{ tentative: SlotPos | null } | null>(null);
+  const [landmarkTypes, setLandmarkTypes] = useState<LandmarkTypeMap>({});
+  // Always the latest values, so two quick placements can never build on a stale map.
+  const landmarksRef = useRef<LandmarkMap>({});
+  const landmarkTypesRef = useRef<LandmarkTypeMap>({});
+  landmarksRef.current = landmarks;
+  landmarkTypesRef.current = landmarkTypes;
+  const [showPalette, setShowPalette] = useState(false);
+  // Non-null while the user is tapping the map: placing one type again and again,
+  // or moving one placed object.
+  type PlaceSession =
+    | { kind: 'place'; typeId: string; placedIds: string[] }
+    | { kind: 'move'; landmarkId: string };
+  const [session, setSession] = useState<PlaceSession | null>(null);
+  const [selectedLandmarkId, setSelectedLandmarkId] = useState<string | null>(null);
   const [confirmDeleteLandmark, setConfirmDeleteLandmark] = useState(false);
-  const [showLandmarkList, setShowLandmarkList] = useState(false);
+  const [placeMessage, setPlaceMessage] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
 
   // ---- Mobile header auto-hide
   const isMobileLayout = useIsMobileLayout();
   const [headerHidden, setHeaderHidden] = useState(false);
   const headerHiddenRef = useRef(false);
   const headerAnimUntilRef = useRef(0);
+  const headerToggledAtRef = useRef(0);
   const swipeRef = useRef({ x: 0, y: 0 });
   const headerCollapsed = isMobileLayout && headerHidden;
 
@@ -531,8 +566,6 @@ export default function App() {
   const landRef = useRef<HTMLDivElement>(null);
   const containerTopRef = useRef<number | null>(null);
 
-  const MIN_SCALE = 0.15;
-  const MAX_SCALE = 3;
   const clampScale = (s: number) => Math.min(Math.max(MIN_SCALE, s), MAX_SCALE);
 
   const measureMap = useCallback(() => {
@@ -549,22 +582,10 @@ export default function App() {
     return metricsRef.current;
   }, []);
 
-  const clampPosition = useCallback((x: number, y: number, scale = scaleRef.current) => {
-    const { viewportW, viewportH, contentW, contentH } = metricsRef.current;
-    if (!viewportW || !viewportH || !contentW || !contentH) return { x, y };
-
-    const scaledW = contentW * scale;
-    const scaledH = contentH * scale;
-
-    return {
-      x: scaledW <= viewportW
-        ? (viewportW - scaledW) / 2
-        : Math.min(0, Math.max(viewportW - scaledW, x)),
-      y: scaledH <= viewportH
-        ? (viewportH - scaledH) / 2
-        : Math.min(0, Math.max(viewportH - scaledH, y)),
-    };
-  }, []);
+  const clampPosition = useCallback(
+    (x: number, y: number, scale = scaleRef.current) => clampView(x, y, scale, metricsRef.current),
+    [],
+  );
 
   const writeTransform = useCallback(() => {
     const content = panZoomRef.current;
@@ -663,15 +684,27 @@ export default function App() {
     animateZoom();
   }, [animateZoom, clampPosition]);
 
+  // Reset view: show the WHOLE farm as it is currently displayed, centred. The
+  // target comes from the land's measured rectangle (what the browser actually laid
+  // out for the current orientation), never from an assumed top-left corner, and it
+  // does not change the orientation. It goes through the same transform and zoom
+  // limits as every other view change.
   const resetView = useCallback(() => {
-    measureMap();
+    const land = landRef.current;
+    const metrics = measureMap();
+    if (!land) return;
+    const view = computeFitView(
+      metrics,
+      { left: land.offsetLeft, top: land.offsetTop, width: land.offsetWidth, height: land.offsetHeight },
+      { minScale: MIN_SCALE, maxScale: MAX_SCALE },
+    );
     stopZoomAnimation();
-    scaleRef.current = 1;
-    targetScaleRef.current = 1;
-    posRef.current = clampPosition(0, 0, 1);
+    scaleRef.current = view.scale;
+    targetScaleRef.current = view.scale;
+    posRef.current = { x: view.x, y: view.y };
     targetPosRef.current = posRef.current;
-    scheduleTransform();
-  }, [clampPosition, measureMap, scheduleTransform, stopZoomAnimation]);
+    writeTransform();
+  }, [measureMap, stopZoomAnimation, writeTransform]);
 
   const zoomInBtn = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -799,6 +832,25 @@ export default function App() {
     return () => cancelAnimationFrame(frame);
   }, [rowsCount, colsCount, measureMap, clampPosition, scheduleTransform]);
 
+  // Show the whole farm once the data has loaded, and again whenever the user picks
+  // another orientation (the picture just changed, so the old pan position is
+  // meaningless). Same fit as the Reset View button.
+  const didInitialFitRef = useRef(false);
+  const fittedOrientationRef = useRef<MapOrientation>('original');
+  useEffect(() => {
+    if (!user) didInitialFitRef.current = false;
+  }, [user]);
+  useEffect(() => {
+    if (loading || !user) return;
+    if (didInitialFitRef.current && fittedOrientationRef.current === orientation) return;
+    const frame = requestAnimationFrame(() => {
+      didInitialFitRef.current = true;
+      fittedOrientationRef.current = orientation;
+      resetView();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [loading, user, orientation, resetView]);
+
   // ---- تحميل البيانات عند بدء التشغيل: Firebase لو متاح، وإلا محلياً ----
   useEffect(() => {
     if (!isFirebaseConfigured || !auth) {
@@ -814,6 +866,8 @@ export default function App() {
           setRowGapKinds(parsed.rowGapKinds && typeof parsed.rowGapKinds === 'object' ? parsed.rowGapKinds : {});
           setColGapKinds(parsed.colGapKinds && typeof parsed.colGapKinds === 'object' ? parsed.colGapKinds : {});
           setLandmarks(normalizeLandmarks(parsed.landmarks));
+          setLandmarkTypes(normalizeLandmarkTypes(parsed.landmarkTypes));
+          setOrientation(normalizeOrientation(parsed.mapOrientation));
         } else {
           setCellsData({});
         }
@@ -837,10 +891,12 @@ export default function App() {
       setRowGapKinds({});
       setColGapKinds({});
       setLandmarks({});
-      setLandmarkDraft(null);
-      setPlacing(null);
+      setLandmarkTypes({});
+      setOrientation('original');
+      setSession(null);
+      setShowPalette(false);
+      setSelectedLandmarkId(null);
       setConfirmDeleteLandmark(false);
-      setShowLandmarkList(false);
       farmDocumentExistsRef.current = false;
       setUser(currentUser);
       setError('');
@@ -880,6 +936,8 @@ export default function App() {
             setRowGapKinds({});
             setColGapKinds({});
             setLandmarks({});
+            setLandmarkTypes({});
+            setOrientation('original');
             setError('تعذر تحميل مزرعة هذا الحساب بأمان. تحقق من بيانات Firestore.');
             setSyncStatus('error');
             setLoading(false);
@@ -894,6 +952,8 @@ export default function App() {
           setColGapKinds(data.colGapKinds && typeof data.colGapKinds === 'object' ? data.colGapKinds as Record<number, GapKind> : {});
           // Optional field: farms saved before landmarks existed simply have none.
           setLandmarks(normalizeLandmarks(data.landmarks));
+          setLandmarkTypes(normalizeLandmarkTypes(data.landmarkTypes));
+          setOrientation(normalizeOrientation(data.mapOrientation));
           if (!data.ownerUid && navigator.onLine) {
             // Backfill ownership metadata without changing the existing farm shape.
             setDoc(docRef, { ownerUid: user.uid }, { merge: true }).catch((err) => {
@@ -913,6 +973,7 @@ export default function App() {
             rowGapKinds: {},
             colGapKinds: {},
             landmarks: {},
+            landmarkTypes: {},
           };
           setCellsData({});
           setRowsCount(DEFAULT_ROWS);
@@ -922,6 +983,8 @@ export default function App() {
           setRowGapKinds({});
           setColGapKinds({});
           setLandmarks({});
+          setLandmarkTypes({});
+          setOrientation('original');
           farmDocumentExistsRef.current = true;
           setDoc(docRef, emptyFarm, { merge: true }).catch((err) => {
             console.error('Failed to initialize new user farm', err);
@@ -989,6 +1052,8 @@ export default function App() {
     nextRowGapKinds = rowGapKinds,
     nextColGapKinds = colGapKinds,
     nextLandmarks = landmarks,
+    nextLandmarkTypes = landmarkTypes,
+    nextOrientation = orientation,
   ) => {
     const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
     const cleanedUnlabeledCols = nextUnlabeledCols.filter((index) => Number.isInteger(index) && index >= 0 && index < nextCols);
@@ -1013,6 +1078,8 @@ export default function App() {
     setRowGapKinds(cleanedRowGapKinds);
     setColGapKinds(cleanedColGapKinds);
     setLandmarks(nextLandmarks);
+    setLandmarkTypes(nextLandmarkTypes);
+    setOrientation(nextOrientation);
 
     const payload = {
       ownerUid: user && 'uid' in user && user.uid !== 'local-user' ? user.uid : undefined,
@@ -1024,6 +1091,8 @@ export default function App() {
       rowGapKinds: cleanedRowGapKinds,
       colGapKinds: cleanedColGapKinds,
       landmarks: nextLandmarks,
+      landmarkTypes: nextLandmarkTypes,
+      mapOrientation: nextOrientation,
     };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
@@ -1060,6 +1129,16 @@ export default function App() {
           if (JSON.stringify(landmarks[id]) === JSON.stringify(nextLandmarks[id])) continue;
           updates[`landmarks.${id}`] = nextLandmarks[id] === undefined ? deleteField() : nextLandmarks[id];
         }
+
+        // Landmark types: same per-key pattern (`landmarkTypes.<id>`).
+        const typeIds = new Set([...Object.keys(landmarkTypes), ...Object.keys(nextLandmarkTypes)]);
+        for (const id of typeIds) {
+          if (JSON.stringify(landmarkTypes[id]) === JSON.stringify(nextLandmarkTypes[id])) continue;
+          updates[`landmarkTypes.${id}`] = nextLandmarkTypes[id] === undefined ? deleteField() : nextLandmarkTypes[id];
+        }
+
+        // Display preference stored with the other layout settings (one optional field).
+        if (nextOrientation !== orientation) updates.mapOrientation = nextOrientation;
 
         if (nextRows !== rowsCount) updates.rowsCount = nextRows;
         if (nextCols !== colsCount) updates.colsCount = nextCols;
@@ -1099,7 +1178,7 @@ export default function App() {
         setSyncStatus('error');
       }
     }
-  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, landmarks]);
+  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, landmarks, landmarkTypes, orientation]);
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -1159,11 +1238,18 @@ export default function App() {
   };
 
   // ---- Mobile header: hide on a deliberate upward drag, reveal on a downward one.
-  const applyHeaderHidden = (next: boolean) => {
+  const applyHeaderHidden = (next: boolean, force = false) => {
     if (headerHiddenRef.current === next) return;
+    const now = performance.now();
+    // A flick that reverses a slide which has only just started is ignored (the
+    // swipe has to continue to count), so slides never pile up. The handle button
+    // always works (force).
+    if (!force && now - headerToggledAtRef.current < HEADER_TOGGLE_COOLDOWN_MS) return;
+    headerToggledAtRef.current = now;
     headerHiddenRef.current = next;
-    // Window during which the map is shifted to follow the header's slide.
-    headerAnimUntilRef.current = performance.now() + 450;
+    // Window during which the map is shifted to follow the header's slide
+    // (the full slide plus a little slack).
+    headerAnimUntilRef.current = now + HEADER_ANIM_MS + 120;
     setHeaderHidden(next);
   };
 
@@ -1198,8 +1284,12 @@ export default function App() {
   }, [isMobileLayout]);
 
   // ---- Landmarks -----------------------------------------------------------
+  // Where cell (0,0) is DRAWN: the label strips move with the mirroring, so every
+  // overlay (infrastructure, landmarks, edit grid) shares this one origin.
+  const gridOrigin = React.useMemo(() => getGridOrigin(orientation), [orientation]);
+
   // Pixel position of a screen point in the farm's own (unscaled) grid space,
-  // measured from the top-left of cell (0,0) - the same origin the layers use.
+  // measured from the top-left of DISPLAYED cell (0,0) - the origin the layers use.
   const clientToGridLocal = (clientX: number, clientY: number) => {
     const land = landRef.current;
     if (!land || !land.offsetWidth) return null;
@@ -1207,102 +1297,126 @@ export default function App() {
     const scale = rect.width / land.offsetWidth;
     if (!scale) return null;
     return {
-      x: (clientX - rect.left) / scale - land.clientLeft - GRID_ORIGIN.left,
-      y: (clientY - rect.top) / scale - land.clientTop - GRID_ORIGIN.top,
+      x: (clientX - rect.left) / scale - land.clientLeft - gridOrigin.left,
+      y: (clientY - rect.top) / scale - land.clientTop - gridOrigin.top,
     };
   };
 
-  const handlePlacementTap = (clientX: number, clientY: number) => {
-    const local = clientToGridLocal(clientX, clientY);
-    if (!local) return;
-    const slot = pixelToSlot(local.x, local.y, rowsCount, colsCount);
-    setPlacing((current) => (current ? { tentative: slot } : current));
+  // Persist the landmark map (and optionally the custom types); every other
+  // argument keeps its current value. The refs are updated first so a second tap in
+  // the same moment builds on this result, not on a stale render.
+  const commitLandmarks = (nextLandmarks: LandmarkMap, nextTypes: LandmarkTypeMap = landmarkTypesRef.current) => {
+    landmarksRef.current = nextLandmarks;
+    landmarkTypesRef.current = nextTypes;
+    persistFarmState(cellsData, rowsCount, colsCount, undefined, undefined, undefined, undefined, nextLandmarks, nextTypes);
   };
 
-  const openCreateLandmark = () => {
-    setLandmarkError('');
-    setConfirmDeleteLandmark(false);
-    setShowLandmarkList(false);
-    setLandmarkDraft({
-      // Generated once, now: every save/retry of this draft writes the same key.
-      id: generateLandmarkId(landmarks),
-      mode: 'create',
-      name: '',
-      icon: DEFAULT_LANDMARK_ICON,
-      position: null,
-    });
+  const startPlacing = (typeId: string) => {
+    setShowPalette(false);
+    setSelectedLandmarkId(null);
+    setPlaceMessage(null);
+    setSession({ kind: 'place', typeId, placedIds: [] });
   };
 
-  const openEditLandmark = (id: string) => {
-    const lm = landmarks[id];
-    if (!lm) return;
-    setLandmarkError('');
-    setConfirmDeleteLandmark(false);
-    setShowLandmarkList(false);
-    setLandmarkDraft({ id: lm.id, mode: 'edit', name: lm.name, icon: lm.icon, position: lm.position });
+  const endSession = () => {
+    setSession(null);
+    setPlaceMessage(null);
   };
 
-  const closeLandmarkDialog = () => {
-    setLandmarkDraft(null);
-    setPlacing(null);
-    setLandmarkError('');
-    setConfirmDeleteLandmark(false);
-  };
-
-  // Persist only the landmarks map; every other argument keeps its current value.
-  const persistLandmarks = (next: LandmarkMap) =>
-    persistFarmState(cellsData, rowsCount, colsCount, undefined, undefined, undefined, undefined, next);
-
-  const saveLandmark = () => {
-    if (!landmarkDraft) return;
-    const nameProblem = validateLandmarkName(landmarkDraft.name);
-    if (nameProblem) { setLandmarkError(nameProblem); return; }
-    if (!landmarkDraft.position) { setLandmarkError('اختر موقع العنصر على الخريطة.'); return; }
-
-    const slotProblem = slotBlockedReason(landmarkDraft.position, {
-      rows: rowsCount, cols: colsCount, grid: kindGrid, landmarks, ignoreId: landmarkDraft.id,
-    });
-    if (slotProblem) { setLandmarkError(SLOT_BLOCK_MESSAGES[slotProblem]); return; }
-
-    const isCreate = landmarkDraft.mode === 'create';
-    if (isCreate && Object.keys(landmarks).length >= MAX_LANDMARKS) {
-      setLandmarkError(`وصلت إلى الحد الأقصى (${MAX_LANDMARKS} عنصر).`);
+  const handlePlacementTap = (clientX: number, clientY: number, onLandmark = false) => {
+    if (!session) return;
+    if (onLandmark) {
+      setPlaceMessage({ text: SLOT_BLOCK_MESSAGES.occupied, tone: 'error' });
       return;
     }
-
-    // Never overwrite a DIFFERENT existing object: on the (practically impossible)
-    // chance the pre-generated id is already taken, mint another one.
-    const id = isCreate && landmarks[landmarkDraft.id] ? generateLandmarkId(landmarks) : landmarkDraft.id;
-    const existing = landmarks[id];
+    const local = clientToGridLocal(clientX, clientY);
+    if (!local) return;
+    // A fingertip is wider than a gutter: taps within a few screen pixels of a
+    // tree's edge still count as the neighbouring gutter. The middle of a tree never does.
+    const slack = Math.min(Math.max(10 / scaleRef.current, 4), GRID.cellW * 0.4);
+    const displaySlot = pickSlotAtPixel(local.x, local.y, rowsCount, colsCount, slack);
+    if (!displaySlot) {
+      setPlaceMessage({ text: SLOT_BLOCK_MESSAGES['tree-center'], tone: 'error' });
+      return;
+    }
+    // Back to the LOGICAL lattice (the mirror is its own inverse).
+    const slot = mirrorSlot(displaySlot, rowsCount, colsCount, orientation);
+    const ctx = { rows: rowsCount, cols: colsCount, grid: kindGrid };
     const now = new Date().toISOString();
-    const saved: FarmLandmark = {
-      id,
-      name: landmarkDraft.name.trim(),
-      icon: sanitizeIcon(landmarkDraft.icon),
-      kind: existing?.kind ?? DEFAULT_LANDMARK_KIND,
-      position: { x: landmarkDraft.position.x, y: landmarkDraft.position.y },
-      createdAt: existing?.createdAt || now,
-      updatedAt: now,
-      ...(existing?.meta ? { meta: existing.meta } : {}),
-    };
-    closeLandmarkDialog();
-    persistLandmarks({ ...landmarks, [id]: saved });
+
+    if (session.kind === 'place') {
+      const type = inventory.find((t) => t.id === session.typeId);
+      if (!type) { endSession(); return; }
+      const result = placeLandmark(landmarksRef.current, type, slot, ctx, now);
+      if (result.ok === false) { setPlaceMessage({ text: result.message, tone: 'error' }); return; }
+      commitLandmarks(result.landmarks);
+      setSession({ ...session, placedIds: [...session.placedIds, result.landmark.id] });
+      setPlaceMessage({ text: `تم وضع «${type.name}»`, tone: 'ok' });
+    } else {
+      const result = moveLandmark(landmarksRef.current, session.landmarkId, slot, ctx, now);
+      if (result.ok === false) { setPlaceMessage({ text: result.message, tone: 'error' }); return; }
+      commitLandmarks(result.landmarks);
+      setSelectedLandmarkId(null);
+      endSession();
+    }
   };
 
-  const deleteLandmark = () => {
-    if (!landmarkDraft || landmarkDraft.mode !== 'edit') return;
-    const { [landmarkDraft.id]: _removed, ...rest } = landmarks;
-    closeLandmarkDialog();
-    persistLandmarks(rest);
+  const undoLastPlacement = () => {
+    if (!session || session.kind !== 'place' || session.placedIds.length === 0) return;
+    const lastId = session.placedIds[session.placedIds.length - 1];
+    commitLandmarks(removeLandmark(landmarksRef.current, lastId));
+    setSession({ ...session, placedIds: session.placedIds.slice(0, -1) });
+    setPlaceMessage(null);
   };
 
-  const confirmPlacement = () => {
-    if (!placing?.tentative || !landmarkDraft) return;
-    const slot = placing.tentative;
-    setLandmarkDraft({ ...landmarkDraft, position: slot });
-    setLandmarkError('');
-    setPlacing(null);
+  // Create a type, then use it straight away.
+  const handleCreateType = (name: string, icon: string): string | null => {
+    const result = createLandmarkType(name, icon, landmarkTypesRef.current, new Date().toISOString());
+    if (result.ok === false) return result.error;
+    commitLandmarks(landmarksRef.current, { ...landmarkTypesRef.current, [result.type.id]: result.type });
+    startPlacing(result.type.id);
+    return null;
   };
+
+  // A type can only be removed while nothing uses it, so deleting a type can never
+  // delete (or orphan) placed objects.
+  const handleDeleteType = (typeId: string) => {
+    const entry = inventory.find((t) => t.id === typeId);
+    if (!entry || entry.source !== 'custom' || entry.count > 0) return;
+    const { [typeId]: _gone, ...rest } = landmarkTypesRef.current;
+    commitLandmarks(landmarksRef.current, rest);
+  };
+
+  const saveLandmarkDetails = (patch: { typeId: string; note: string }) => {
+    if (!selectedLandmarkId) return;
+    const type = inventory.find((t) => t.id === patch.typeId);
+    const result = updateLandmark(landmarksRef.current, selectedLandmarkId, { type, note: patch.note }, new Date().toISOString());
+    setSelectedLandmarkId(null);
+    if (result.ok) commitLandmarks(result.landmarks);
+  };
+
+  const confirmDeleteSelectedLandmark = () => {
+    if (!selectedLandmarkId) return;
+    const id = selectedLandmarkId;
+    setConfirmDeleteLandmark(false);
+    setSelectedLandmarkId(null);
+    commitLandmarks(removeLandmark(landmarksRef.current, id));
+  };
+
+  // Placement only makes sense while laying out the farm.
+  useEffect(() => {
+    if (mode !== 'edit') {
+      setSession(null);
+      setShowPalette(false);
+    }
+  }, [mode]);
+
+  // Result messages fade after a moment.
+  useEffect(() => {
+    if (!placeMessage) return;
+    const timer = window.setTimeout(() => setPlaceMessage(null), 3200);
+    return () => window.clearTimeout(timer);
+  }, [placeMessage]);
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
@@ -1324,7 +1438,7 @@ export default function App() {
       panStart.current = { x: e.clientX - current.x, y: e.clientY - current.y };
       targetPosRef.current = current;
       pinchStart.current = null;
-      setIsDragging(true);
+      containerRef.current?.setAttribute('data-dragging', 'true');
     } else if (pointers.current.size === 2) {
       stopZoomAnimation();
       const pts = getPointsArray();
@@ -1347,7 +1461,7 @@ export default function App() {
     dragDistance.current += Math.abs(moveDx) + Math.abs(moveDy);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
 
-    if (isMobileLayout && e.pointerType !== 'mouse' && pointers.current.size === 1 && !pinchOccurred.current && !placing) {
+    if (isMobileLayout && e.pointerType !== 'mouse' && pointers.current.size === 1 && !pinchOccurred.current && !session) {
       trackHeaderSwipe(moveDx, moveDy);
     }
 
@@ -1379,21 +1493,22 @@ export default function App() {
       panStart.current = { x: remaining.x - posRef.current.x, y: remaining.y - posRef.current.y };
       pinchStart.current = null;
     } else if (pointers.current.size === 0) {
-      setIsDragging(false);
+      containerRef.current?.removeAttribute('data-dragging');
       panStart.current = null;
       pinchStart.current = null;
 
       if (isTapCandidate && !pinchOccurred.current && dragDistance.current < 10) {
-        // Choosing a location for a landmark: the tap is consumed by that flow.
-        if (placing) {
-          handlePlacementTap(e.clientX, e.clientY);
+        // Placing / moving a landmark: the tap is consumed by that flow.
+        if (session) {
+          handlePlacementTap(e.clientX, e.clientY, (e.target as HTMLElement | null)?.closest?.('[data-landmark-id]') != null);
           return;
         }
         const el = document.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
         // Landmarks are separate objects: a tap on one never selects a tree/cell.
         const landmarkEl = el?.closest('[data-landmark-id]') as HTMLElement | null;
         if (landmarkEl?.dataset.landmarkId) {
-          openEditLandmark(landmarkEl.dataset.landmarkId);
+          setConfirmDeleteLandmark(false);
+          setSelectedLandmarkId(landmarkEl.dataset.landmarkId);
           return;
         }
         const cellEl = el?.closest('[data-cell-id]') as HTMLElement | null;
@@ -1450,9 +1565,13 @@ export default function App() {
 
   // ---- Landmark view-model (all derived; nothing here is stored) -------------
   const describeLandmarkSlot = React.useCallback(
-    (slot: SlotPos) => describeSlot(slot, coordMap.describeAt, rowsCount, colsCount),
+    (slot: { x: number; y: number }) => describeSlot(slot, coordMap.describeAt, rowsCount, colsCount),
     [coordMap, rowsCount, colsCount]
   );
+
+  // Palette entries (presets, custom types, types only known from placed objects)
+  // with live instance counts.
+  const inventory = React.useMemo(() => buildLandmarkInventory(landmarks, landmarkTypes), [landmarks, landmarkTypes]);
 
   // A saved landmark whose slot is no longer valid (a road/drain was later drawn
   // beside it, ...) is KEPT and flagged, never deleted or moved automatically.
@@ -1467,78 +1586,97 @@ export default function App() {
     return ids;
   }, [landmarks, kindGrid, rowsCount, colsCount]);
 
-  const landmarkList = React.useMemo(
-    () => Object.values(landmarks).sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '') || (a.id < b.id ? -1 : 1)),
-    [landmarks]
+  const placedItems = React.useMemo<PlacedItem[]>(
+    () => Object.values(landmarks)
+      .sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || '') || (a.id < b.id ? -1 : 1))
+      .map((landmark) => ({ landmark, where: describeLandmarkSlot(landmark.position), conflict: landmarkConflictIds.has(landmark.id) })),
+    [landmarks, describeLandmarkSlot, landmarkConflictIds]
   );
 
-  const placementProblem = (() => {
-    if (!placing?.tentative) return null;
-    const reason = slotBlockedReason(placing.tentative, {
-      rows: rowsCount, cols: colsCount, grid: kindGrid, landmarks, ignoreId: landmarkDraft?.id ?? null,
-    });
-    return reason ? SLOT_BLOCK_MESSAGES[reason] : null;
-  })();
-  const placementText = placing?.tentative ? describeLandmarkSlot(placing.tentative) : null;
+  const selectedLandmark = selectedLandmarkId ? landmarks[selectedLandmarkId] ?? null : null;
+  const sessionType = session?.kind === 'place' ? inventory.find((t) => t.id === session.typeId) ?? null : null;
+  const sessionLandmark = session?.kind === 'move' ? landmarks[session.landmarkId] ?? null : null;
+  const highlightedLandmarkId = session?.kind === 'move' ? session.landmarkId : selectedLandmarkId;
+  const totalPlaced = placedItems.length;
 
-  const draftSlotProblem = (() => {
-    if (!landmarkDraft?.position) return null;
-    const reason = slotBlockedReason(landmarkDraft.position, {
-      rows: rowsCount, cols: colsCount, grid: kindGrid, landmarks, ignoreId: landmarkDraft.id,
-    });
-    return reason ? SLOT_BLOCK_MESSAGES[reason] : null;
-  })();
-  const editingLandmarkId = landmarkDraft?.mode === 'edit' ? landmarkDraft.id : null;
+  // ---- Orientation view-model --------------------------------------------------
+  const flipX = flipsColumns(orientation);
+  const flipY = flipsRows(orientation);
+  // Displayed position -> logical index, per axis. Cells keep their stored ids and
+  // records; only the order they are laid out in changes.
+  const rowOrder = React.useMemo(() => displayOrder(rowsCount, flipY), [rowsCount, flipY]);
+  const colOrder = React.useMemo(() => displayOrder(colsCount, flipX), [colsCount, flipX]);
+  // The same infrastructure, re-laid-out for display (identical object when not mirrored).
+  const displayKindGrid = React.useMemo(() => mirrorKindGrid(kindGrid, orientation), [kindGrid, orientation]);
 
   // Rebuilt only when map data / labels / mode / selection change - never on
   // pan, zoom, drag or sync-status updates. Each MapCell is itself memoised, so
   // a single edit re-renders a single cell.
-  const gridCells = React.useMemo(() => (
-    <>
-      {/* صف الأرقام العلوي */}
-      <div className="farm-axis-cell farm-axis-corner mb-2">#</div>
-      {[...Array(colsCount)].map((_, colIndex) => (
-        <div
-          key={`header-${colIndex}`}
-          className={`farm-axis-cell farm-axis-col mb-2 ${colGapKinds[colIndex] ? `farm-axis-${colGapKinds[colIndex]}` : ''}`}
-        >
-          {displayColLabels[colIndex]}
-        </div>
-      ))}
-
-      {/* صفوف المزرعة */}
-      {rowLabels.map((rowLetter, rowIndex) => (
-        <React.Fragment key={rowLetter}>
-          {/* حرف/رقم الصف المعروض؛ قد يكون فارغاً لصف طريق/مصرف */}
-          <div className={`farm-axis-cell farm-axis-row sticky right-0 z-10 ${rowGapKinds[rowIndex] ? `farm-axis-${rowGapKinds[rowIndex]}` : ''}`}>
-            {displayRowLabels[rowIndex]}
+  const gridCells = React.useMemo(() => {
+    // Axis strips travel with the mirroring: the header row sits at the bottom when
+    // the farm is flipped top<->bottom, the row-label column on the right when it is
+    // flipped left<->right. DOM order = grid auto-placement order.
+    const corner = <div key="corner" className={`farm-axis-cell farm-axis-corner ${flipY ? 'mt-2' : 'mb-2'}`}>#</div>;
+    const headerRow = (
+      <React.Fragment key="header-row">
+        {!flipX && corner}
+        {colOrder.map((c) => (
+          <div
+            key={`header-${c}`}
+            className={`farm-axis-cell farm-axis-col ${flipY ? 'mt-2' : 'mb-2'} ${colGapKinds[c] ? `farm-axis-${colGapKinds[c]}` : ''}`}
+          >
+            {displayColLabels[c]}
           </div>
+        ))}
+        {flipX && corner}
+      </React.Fragment>
+    );
 
-          {/* مساحات/خلايا الصف */}
-          {[...Array(colsCount)].map((_, colIndex) => {
-            const cellId = `${rowLetter}-${colIndex + 1}`;
-            // Visible coordinate ("001-012"); empty for cells in an unnumbered row/column.
-            // The stored id above is never derived from it.
-            const displayCellLabel = coordMap.coordinateAt(rowIndex, colIndex) ?? '';
+    return (
+      <>
+        {!flipY && headerRow}
 
-            return (
-              <MapCell
-                key={cellId}
-                cellId={cellId}
-                data={cellsData[cellId]}
-                infraKind={kindAt(kindGrid, rowIndex, colIndex)}
-                gapKind={rowGapKinds[rowIndex] || colGapKinds[colIndex] || null}
-                label={displayCellLabel}
-                coordinate={coordMap.describeAt(rowIndex, colIndex)}
-                editMode={mode === 'edit'}
-                selected={selectedCellId === cellId}
-              />
-            );
-          })}
-        </React.Fragment>
-      ))}
-    </>
-  ), [cellsData, rowLabels, colsCount, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
+        {/* صفوف المزرعة */}
+        {rowOrder.map((rowIndex) => {
+          const rowLetter = rowLabels[rowIndex];
+          // حرف/رقم الصف المعروض؛ قد يكون فارغاً لصف طريق/مصرف
+          const rowLabelCell = (
+            <div key="row-label" className={`farm-axis-cell farm-axis-row sticky right-0 z-10 ${rowGapKinds[rowIndex] ? `farm-axis-${rowGapKinds[rowIndex]}` : ''}`}>
+              {displayRowLabels[rowIndex]}
+            </div>
+          );
+          return (
+            <React.Fragment key={rowLetter}>
+              {!flipX && rowLabelCell}
+              {colOrder.map((colIndex) => {
+                const cellId = `${rowLetter}-${colIndex + 1}`;
+                // Visible coordinate ("12-07"); empty for cells in an unnumbered row/column.
+                // The stored id above is never derived from it, nor from the orientation.
+                const displayCellLabel = coordMap.coordinateAt(rowIndex, colIndex) ?? '';
+
+                return (
+                  <MapCell
+                    key={cellId}
+                    cellId={cellId}
+                    data={cellsData[cellId]}
+                    infraKind={kindAt(kindGrid, rowIndex, colIndex)}
+                    gapKind={rowGapKinds[rowIndex] || colGapKinds[colIndex] || null}
+                    label={displayCellLabel}
+                    coordinate={coordMap.describeAt(rowIndex, colIndex)}
+                    editMode={mode === 'edit'}
+                    selected={selectedCellId === cellId}
+                  />
+                );
+              })}
+              {flipX && rowLabelCell}
+            </React.Fragment>
+          );
+        })}
+
+        {flipY && headerRow}
+      </>
+    );
+  }, [cellsData, rowLabels, rowOrder, colOrder, flipX, flipY, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
 
   const handleLogout = async () => {
     if (!auth) return;
@@ -1714,53 +1852,41 @@ export default function App() {
               )}
             </div>
 
-            {/* عناصر المزرعة المخصصة: إنشاء + قائمة بالعناصر الموجودة */}
+            {/* اتجاه الخريطة: اختيار مباشر (وليس قلباً إضافياً). يعكس الأشجار والطرق والمصارف والعناصر والتسميات معاً. */}
+            <div className="flex items-center gap-1.5" role="group" aria-label="اتجاه الخريطة" data-testid="orientation-control">
+              <span className="text-xs font-bold text-amber-900 whitespace-nowrap">اتجاه الخريطة:</span>
+              <div className="flex bg-white/70 border border-amber-300 rounded-lg overflow-hidden">
+                {ORIENTATION_OPTIONS.map((opt) => (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    data-orientation={opt.value}
+                    aria-pressed={orientation === opt.value}
+                    title={opt.english}
+                    onClick={() => persistFarmState(
+                      cellsData, rowsCount, colsCount, undefined, undefined, undefined, undefined,
+                      landmarks, landmarkTypes, opt.value,
+                    )}
+                    className={`px-2.5 py-1.5 text-xs font-bold transition-colors border-l border-amber-200 first:border-l-0 ${
+                      orientation === opt.value ? 'bg-emerald-700 text-white' : 'text-amber-900 hover:bg-amber-100'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* قائمة العناصر: أنواع العناصر + وضع أي عدد منها + العناصر الموضوعة */}
             <button
               type="button"
-              onClick={openCreateLandmark}
+              data-testid="open-palette"
+              onClick={() => { setShowPalette(true); setSelectedLandmarkId(null); }}
+              aria-haspopup="dialog"
               className="flex items-center gap-1 bg-sky-700 hover:bg-sky-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
             >
-              <Plus size={14} /> إنشاء عنصر جديد
+              <span aria-hidden="true">📍</span> قائمة العناصر ({totalPlaced})
             </button>
-
-            <div className="relative">
-              <button
-                type="button"
-                onClick={() => setShowLandmarkList((v) => !v)}
-                aria-expanded={showLandmarkList}
-                className="flex items-center gap-1 bg-sky-600 hover:bg-sky-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
-              >
-                <span aria-hidden="true">📍</span> العناصر ({landmarkList.length})
-              </button>
-              {showLandmarkList && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowLandmarkList(false)} />
-                  <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden w-[260px] max-h-[55vh] overflow-y-auto">
-                    {landmarkList.length === 0 ? (
-                      <div className="px-3 py-3 text-xs text-gray-500 leading-relaxed">
-                        لا توجد عناصر مخصصة بعد. اضغط «إنشاء عنصر جديد» لإضافة حنفية أو حوض ماء أو عمود إنارة.
-                      </div>
-                    ) : (
-                      landmarkList.map((lm) => (
-                        <button
-                          key={lm.id}
-                          type="button"
-                          onClick={() => openEditLandmark(lm.id)}
-                          className="w-full flex items-center gap-2 text-right px-3 py-2 hover:bg-emerald-50 border-b border-gray-100 last:border-b-0"
-                        >
-                          <span className="text-lg leading-none" aria-hidden="true">{lm.icon}</span>
-                          <span className="flex-1 min-w-0">
-                            <span className="block text-sm font-bold text-gray-800 truncate">{lm.name}</span>
-                            <span className="block text-[11px] text-gray-500 truncate">{describeLandmarkSlot(lm.position)}</span>
-                          </span>
-                          {landmarkConflictIds.has(lm.id) && <AlertTriangle size={14} className="text-amber-600 flex-none" />}
-                        </button>
-                      ))
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
 
             <div className="relative">
               <button
@@ -1882,7 +2008,7 @@ export default function App() {
           data-visible={headerCollapsed ? 'true' : undefined}
           tabIndex={headerCollapsed ? 0 : -1}
           aria-label="إظهار الشريط العلوي"
-          onClick={() => applyHeaderHidden(false)}
+          onClick={() => applyHeaderHidden(false, true)}
         >
           <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true" focusable="false">
             <path d="M2 2l7 6 7-6" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
@@ -1932,14 +2058,14 @@ export default function App() {
                 <span className="farm-legend-item"><i className="farm-legend-swatch" style={{ background: '#667874' }} />مصرف</span>
                 <span className="farm-legend-item"><span aria-hidden="true">🛢️</span>حوض رش</span>
               </div>
-              {landmarkList.length > 0 && (
+              {inventory.some((t) => t.count > 0) && (
                 <>
                   <div className="farm-legend-title">العناصر المخصصة</div>
                   <div className="farm-legend-grid">
-                    {landmarkList.map((lm) => (
-                      <span key={lm.id} className="farm-legend-item" title={lm.name}>
-                        <span aria-hidden="true">{lm.icon}</span>
-                        <span className="truncate">{lm.name}</span>
+                    {inventory.filter((t) => t.count > 0).map((t) => (
+                      <span key={t.id} className="farm-legend-item" title={t.name}>
+                        <span aria-hidden="true">{t.icon}</span>
+                        <span className="truncate">{t.name} ({t.count})</span>
                       </span>
                     ))}
                   </div>
@@ -1960,7 +2086,7 @@ export default function App() {
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          className={`farm-map-canvas w-full h-full touch-none ${isDragging ? 'cursor-grabbing farm-map-dragging' : 'cursor-grab'} ${mode === 'edit' ? 'farm-map-edit' : ''}`} style={{ direction: 'ltr' }}
+          className={`farm-map-canvas w-full h-full touch-none ${mode === 'edit' ? 'farm-map-edit' : ''}`} style={{ direction: 'ltr' }}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -1975,9 +2101,13 @@ export default function App() {
             <div
               ref={landRef}
               className="farm-land"
+              data-orientation={orientation}
               style={{
                 display: 'grid',
-                gridTemplateColumns: `${GRID.labelColW}px repeat(${colsCount}, ${GRID.cellW}px)`,
+                // The label column sits on the right when mirrored left<->right.
+                gridTemplateColumns: flipX
+                  ? `repeat(${colsCount}, ${GRID.cellW}px) ${GRID.labelColW}px`
+                  : `${GRID.labelColW}px repeat(${colsCount}, ${GRID.cellW}px)`,
                 gridAutoRows: `${GRID.cellH}px`,
                 gap: `${GRID.gap}px`,
                 padding: `${GRID.pad}px`,
@@ -1986,21 +2116,21 @@ export default function App() {
               {/* Both are absolutely positioned, so they take no grid cell. The
                   overlay is first in DOM order so trees/cells paint above it. */}
               <TreeSymbols />
-              <InfrastructureLayer grid={kindGrid} />
+              <InfrastructureLayer grid={displayKindGrid} origin={gridOrigin} />
+              {/* Edit mode: ONE dashed-cell pattern instead of an outline on every cell. */}
+              {mode === 'edit' && <EditGridOverlay rows={rowsCount} cols={colsCount} origin={gridOrigin} />}
               {/* Landmarks: their own layer on the same origin. Not grid cells, so no tree is displaced. */}
               <LandmarkLayer
                 landmarks={landmarks}
                 rows={rowsCount}
                 cols={colsCount}
-                selectedId={editingLandmarkId}
+                orientation={orientation}
+                origin={gridOrigin}
+                selectedId={highlightedLandmarkId}
                 conflictIds={landmarkConflictIds}
-                placing={placing !== null}
-                ghost={
-                  placing?.tentative && landmarkDraft
-                    ? { slot: placing.tentative, icon: landmarkDraft.icon || DEFAULT_LANDMARK_ICON, valid: !placementProblem }
-                    : null
-                }
-                hiddenId={placing && landmarkDraft?.mode === 'edit' ? landmarkDraft.id : null}
+                placing={session !== null}
+                kindGrid={kindGrid}
+                movingId={session?.kind === 'move' ? session.landmarkId : null}
               />
               {gridCells}
             </div>
@@ -2138,34 +2268,51 @@ export default function App() {
           </div>
         </div>
       )}
-      {/* عناصر المزرعة المخصصة: نموذج الإنشاء/التعديل، شريط اختيار الموقع، وتأكيد الحذف */}
-      {landmarkDraft && !placing && (
-        <LandmarkDialog
-          draft={landmarkDraft}
-          locationText={landmarkDraft.position ? describeLandmarkSlot(landmarkDraft.position) : null}
-          locationProblem={draftSlotProblem}
-          error={landmarkError}
-          onChange={(patch) => { setLandmarkError(''); setLandmarkDraft({ ...landmarkDraft, ...patch }); }}
-          onPickLocation={() => { setLandmarkError(''); setPlacing({ tentative: landmarkDraft.position }); }}
-          onSave={saveLandmark}
-          onCancel={closeLandmarkDialog}
-          onDelete={landmarkDraft.mode === 'edit' ? () => setConfirmDeleteLandmark(true) : undefined}
+      {/* قائمة العناصر، شريط الوضع المتكرر، تفاصيل عنصر واحد، وتأكيد حذفه */}
+      {showPalette && (
+        <LandmarkPalette
+          inventory={inventory}
+          placed={placedItems}
+          onPick={startPlacing}
+          onCreateType={handleCreateType}
+          onDeleteType={handleDeleteType}
+          onOpenLandmark={(id) => { setShowPalette(false); setConfirmDeleteLandmark(false); setSelectedLandmarkId(id); }}
+          onClose={() => setShowPalette(false)}
         />
       )}
-      {landmarkDraft && placing && (
+      {session && (
         <PlacementBar
-          icon={landmarkDraft.icon}
-          locationText={placementText}
-          problem={placementProblem}
-          canConfirm={!!placing.tentative && !placementProblem}
-          onConfirm={confirmPlacement}
-          onCancel={() => setPlacing(null)}
+          mode={session.kind}
+          icon={session.kind === 'place' ? sessionType?.icon ?? '📍' : sessionLandmark?.icon ?? '📍'}
+          name={session.kind === 'place' ? sessionType?.name ?? '' : sessionLandmark?.name ?? ''}
+          placedNow={session.kind === 'place' ? session.placedIds.length : 0}
+          total={session.kind === 'place' ? sessionType?.count ?? 0 : 0}
+          message={placeMessage}
+          canUndo={session.kind === 'place' && session.placedIds.length > 0}
+          onUndo={undoLastPlacement}
+          onChangeType={() => { endSession(); setShowPalette(true); }}
+          onDone={endSession}
         />
       )}
-      {landmarkDraft && confirmDeleteLandmark && landmarks[landmarkDraft.id] && (
+      {selectedLandmark && !session && (
+        <LandmarkDetailsDialog
+          key={selectedLandmark.id}
+          landmark={selectedLandmark}
+          inventory={inventory}
+          typeKey={landmarkTypeKey(selectedLandmark)}
+          where={describeLandmarkSlot(selectedLandmark.position)}
+          conflict={landmarkConflictIds.has(selectedLandmark.id)}
+          onSave={saveLandmarkDetails}
+          onMove={() => { setSession({ kind: 'move', landmarkId: selectedLandmark.id }); setPlaceMessage(null); }}
+          onDelete={() => setConfirmDeleteLandmark(true)}
+          onClose={() => { setSelectedLandmarkId(null); setConfirmDeleteLandmark(false); }}
+        />
+      )}
+      {selectedLandmark && confirmDeleteLandmark && (
         <DeleteLandmarkConfirm
-          landmark={landmarks[landmarkDraft.id]}
-          onConfirm={deleteLandmark}
+          landmark={selectedLandmark}
+          where={describeLandmarkSlot(selectedLandmark.position)}
+          onConfirm={confirmDeleteSelectedLandmark}
           onCancel={() => setConfirmDeleteLandmark(false)}
         />
       )}

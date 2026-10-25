@@ -39,7 +39,8 @@ body {
   overflow: hidden;
 }
 
-.farm-map-canvas:active {
+.farm-map-canvas:active,
+.farm-map-canvas[data-dragging="true"] {
   cursor: grabbing;
 }
 
@@ -100,7 +101,7 @@ body {
   left: 0;
   right: 0;
   text-align: center;
-  font-size: 8px;
+  font-size: 9px;
   font-weight: 700;
   line-height: 1;
   color: #6b5d44;
@@ -109,10 +110,10 @@ body {
   z-index: 10;
 }
 
-.farm-map-edit .farm-map-cell {
-  outline: 1px dashed rgba(92, 78, 54, 0.24);
-  outline-offset: -1px;
-}
+/* Edit mode used to outline all ~1,800 cells with their own dashed CSS outline,
+   which made every zoom frame repaint 1,800 outlines. The same dashed grid is now
+   one SVG pattern (EditGridOverlay.tsx). */
+.farm-edit-grid { z-index: 1; }
 .farm-map-edit .farm-map-cell-label { opacity: 0.8; }
 
 .farm-map-cell[data-selected="true"],
@@ -133,8 +134,8 @@ body {
 /* ---- Trees ---------------------------------------------------------------------- */
 .farm-natural-tree {
   position: relative;
-  width: 94%;
-  height: 97%;
+  width: 100%;
+  height: 100%;
   display: block;
   overflow: visible;
   shape-rendering: geometricPrecision;
@@ -148,9 +149,9 @@ body {
   width: 100%;
   /* Leaves a strip at the bottom of the cell for the coordinate label, so a tree
      can never be drawn over its own (or a neighbour's) label. */
-  height: calc(100% - 11px);
+  height: calc(100% - 12px);
   /* The wrapper is bottom-aligned, so the strip must be an explicit margin. */
-  margin-bottom: 11px;
+  margin-bottom: 12px;
 }
 
 .farm-tree-status-badge {
@@ -176,10 +177,10 @@ body {
 }
 
 .farm-flat-empty-tree {
-  width: 28%;
-  height: 28%;
-  min-width: 10px;
-  min-height: 10px;
+  width: 34%;
+  height: 34%;
+  min-width: 12px;
+  min-height: 12px;
   border: 2px solid #cbd5d1;
   border-radius: 50%;
   opacity: 0.72;
@@ -249,7 +250,7 @@ body {
 @keyframes farm-water-flow { to { stroke-dashoffset: -138.8; } }
 @keyframes farm-water-flow-slow { to { stroke-dashoffset: -101.8; } }
 
-.farm-map-dragging .farm-water-flow {
+.farm-map-canvas[data-dragging="true"] .farm-water-flow {
   animation-play-state: paused;
 }
 
@@ -317,7 +318,7 @@ body {
 /* حوض الرش في تخطيط المزرعة: الرسم SVG واحد يتمركز ويتناسب مع الخلية دائماً */
 .farm-spray-tank {
   width: 100%;
-  height: calc(100% - 11px);
+  height: calc(100% - 12px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -349,8 +350,8 @@ body {
 }
 .farm-landmark {
   position: absolute;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   margin: 0;
   padding: 0;
   display: flex;
@@ -360,7 +361,7 @@ body {
   background: rgba(255, 255, 255, 0.96);
   border: 1.5px solid #b3a26f;
   box-shadow: 0 1px 2px rgba(60, 45, 10, 0.28);
-  font-size: 12px;
+  font-size: 15px;
   line-height: 1;
   cursor: pointer;
   pointer-events: auto;
@@ -369,7 +370,7 @@ body {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
 }
-/* Larger invisible hit area: a 20px badge is too small for a finger. */
+/* Larger invisible hit area: a 24px badge is still small for a finger. */
 .farm-landmark::after {
   content: '';
   position: absolute;
@@ -389,61 +390,59 @@ body {
 .farm-map-low-zoom .farm-landmark { transform: translate(-50%, -50%) scale(1.7); }
 .farm-map-xlow-zoom .farm-landmark { transform: translate(-50%, -50%) scale(2.8); }
 
-/* Placement preview (the slot the user is about to confirm). */
-.farm-landmark-ghost {
-  position: absolute;
-  width: 26px;
-  height: 26px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.92);
-  border: 2px dashed #047857;
-  font-size: 15px;
-  line-height: 1;
-  transform: translate(-50%, -50%);
-  pointer-events: none;
-  animation: farm-ghost-pulse 1.4s ease-in-out infinite;
-}
-.farm-landmark-ghost[data-invalid="true"] { border-color: #dc2626; }
-@keyframes farm-ghost-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(4, 120, 87, 0.45); }
-  50% { box-shadow: 0 0 0 7px rgba(4, 120, 87, 0); }
-}
 .farm-slot-dots { pointer-events: none; }
 .farm-map-low-zoom .farm-slot-dots { display: none; }
 
-@media (prefers-reduced-motion: reduce) {
-  .farm-landmark-ghost { animation: none; }
-}
-
 /* ---- Mobile header: collapses on map swipes (phones only, see App.tsx) ----------- */
 /* The wrapper is a transparent pass-through everywhere except small screens, so the
-   desktop header is byte-for-byte the same layout as before. */
+   desktop header is byte-for-byte the same layout as before.
+
+   Timing: the slide used to take 280ms (opacity 220ms). Both are now three times
+   slower. --farm-header-ms is the ONE duration: the row collapse and the header's
+   slide share it and the same curve, so they stay locked together (the header's
+   bottom edge always coincides with the collapsing row's edge) and the map below
+   follows one continuous motion. HEADER_ANIM_MS in App.tsx must match it.
+
+   Only compositor-friendly properties are animated on the header itself
+   (transform, opacity). The row collapse is the one layout transition, and it is
+   needed so the map viewport grows/shrinks with the header; the map follows it
+   without re-laying-out its contents. */
+:root {
+  --farm-header-ms: 840ms;
+  --farm-header-fade-ms: 660ms;
+  --farm-header-ease: cubic-bezier(0.4, 0, 0.2, 1);
+}
 .farm-header-collapse { position: relative; z-index: 20; }
 .farm-header-handle { display: none; }
 @media (max-width: 767px), (pointer: coarse) and (max-height: 500px) {
   .farm-header-collapse {
     display: grid;
     grid-template-rows: 1fr;
-    transition: grid-template-rows 280ms cubic-bezier(0.22, 0.61, 0.36, 1);
+    transition: grid-template-rows var(--farm-header-ms) var(--farm-header-ease);
   }
   .farm-header-collapse-inner {
     min-height: 0;
     overflow: hidden;
-    transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 220ms ease;
     padding-top: env(safe-area-inset-top, 0px);
     background: #064e3b; /* same as bg-emerald-900 so the safe-area strip matches */
   }
+  /* The slide is on the header itself (a fixed-size child), not on the box that is
+     shrinking, so there is no compounded motion: the header's bottom edge is always
+     exactly the collapsing row's bottom edge. */
+  .farm-header-collapse-inner > header {
+    transition: transform var(--farm-header-ms) var(--farm-header-ease), opacity var(--farm-header-fade-ms) ease;
+    will-change: transform, opacity;
+  }
   .farm-header-collapse[data-hidden="true"] { grid-template-rows: 0fr; }
   .farm-header-collapse[data-hidden="true"] .farm-header-collapse-inner {
-    transform: translateY(-100%);
-    opacity: 0;
     pointer-events: none;
     /* Removes the hidden controls from the tab order, but only AFTER the slide ends. */
     visibility: hidden;
-    transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 220ms ease, visibility 0s linear 280ms;
+    transition: visibility 0s linear var(--farm-header-ms);
+  }
+  .farm-header-collapse[data-hidden="true"] .farm-header-collapse-inner > header {
+    transform: translateY(calc(-100% - env(safe-area-inset-top, 0px)));
+    opacity: 0;
   }
   /* The always-available way back, in case no upward swipe is convenient. */
   .farm-header-handle {
@@ -465,7 +464,7 @@ body {
     background: rgba(6, 78, 59, 0.92);
     color: #d1fae5;
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
-    transition: transform 280ms cubic-bezier(0.22, 0.61, 0.36, 1), opacity 220ms ease;
+    transition: transform var(--farm-header-ms) var(--farm-header-ease), opacity var(--farm-header-fade-ms) ease;
     touch-action: manipulation;
   }
   .farm-header-handle[data-visible="true"] {
@@ -478,5 +477,6 @@ body {
 @media (prefers-reduced-motion: reduce) {
   .farm-header-collapse,
   .farm-header-collapse-inner,
+  .farm-header-collapse-inner > header,
   .farm-header-handle { transition: none !important; }
 }
