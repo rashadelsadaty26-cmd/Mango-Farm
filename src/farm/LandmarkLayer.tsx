@@ -35,6 +35,8 @@ export interface LandmarkLayerProps {
   placing: boolean;
   /** Connected infrastructure (LOGICAL layout); decides which slots are usable. */
   kindGrid: KindGrid | null;
+  /** Current runtime spacing, so memoized landmark pixel positions stay aligned. */
+  gridGap?: number;
   /** The object being moved (its own slot stays available). */
   movingId?: string | null;
 }
@@ -60,7 +62,7 @@ const Badge = React.memo(function Badge({
 });
 
 export const LandmarkLayer = React.memo(function LandmarkLayer({
-  landmarks, rows, cols, orientation, origin, selectedId, conflictIds, placing, kindGrid, movingId = null,
+  landmarks, rows, cols, orientation, origin, selectedId, conflictIds, placing, kindGrid, gridGap = 28, movingId = null,
 }: LandmarkLayerProps) {
   const list = useMemo(() => Object.values(landmarks), [landmarks]);
   const offsets = useMemo(() => stackOffsets(list), [list]);
@@ -71,7 +73,7 @@ export const LandmarkLayer = React.memo(function LandmarkLayer({
       const p = slotToPixel(mirrorSlot(lm.position, rows, cols, orientation));
       return { lm, x: p.x + (offsets[lm.id] ?? 0), y: p.y };
     }),
-    [list, offsets, rows, cols, orientation],
+    [list, offsets, rows, cols, orientation, gridGap],
   );
   // One <path> of small circles, one per slot the user may tap right now: not a tree,
   // inside the farm, not beside a road/drain, not already taken. Recomputed only
@@ -90,7 +92,7 @@ export const LandmarkLayer = React.memo(function LandmarkLayer({
       }
     }
     return d;
-  }, [placing, list, movingId, rows, cols, kindGrid, orientation]);
+  }, [placing, list, movingId, rows, cols, kindGrid, orientation, gridGap]);
   const { width, height } = getOverlaySize(rows, cols);
 
   if (list.length === 0 && !placing) return null;

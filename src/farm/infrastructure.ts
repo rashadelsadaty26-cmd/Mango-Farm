@@ -30,24 +30,35 @@ export type InfraKind = 'water' | 'road' | 'drainage' | 'gap';
 //                  enough to hold a landmark badge with a clearly readable icon
 //                  (see landmarks.ts / .farm-landmark in index.css).
 const CELL_H = 88;
+export const DEFAULT_GRID_GAP = 28;
+export const MIN_GRID_GAP = 8;
+export const MAX_GRID_GAP = 48;
 export const GRID = {
   cellW: 76,
   cellH: CELL_H,
-  gap: 28,
+  gap: DEFAULT_GRID_GAP,
   labelColW: 50,
   // The header row is just the first implicit grid row, so it shares gridAutoRows.
   headerH: CELL_H,
   pad: 24,
-} as const;
+};
+
+/** Apply a visual-only spacing value. Cell IDs and saved positions never depend on it. */
+export function applyGridGap(value: unknown): number {
+  const parsed = typeof value === 'number' ? value : Number(value);
+  const gap = Number.isFinite(parsed)
+    ? Math.max(MIN_GRID_GAP, Math.min(MAX_GRID_GAP, Math.round(parsed)))
+    : DEFAULT_GRID_GAP;
+  GRID.gap = gap;
+  return gap;
+}
 
 /**
- * The infrastructure stroke widths in InfrastructureLayer were designed for the
- * original 59px column pitch (55px cell + 4px gap). They are multiplied by this
- * factor so roads, drains and canals keep exactly the same proportion of a cell
- * whatever the grid metrics are.
+ * The infrastructure stroke widths are scaled to the active cell pitch so roads,
+ * drains and canals keep their intended proportions across spacing settings.
  */
 export const INFRA_DESIGN_PITCH = 59;
-export const INFRA_SCALE = (GRID.cellW + GRID.gap) / INFRA_DESIGN_PITCH;
+export const getInfrastructureScale = () => (GRID.cellW + GRID.gap) / INFRA_DESIGN_PITCH;
 
 /**
  * Top-left of cell (row 0, col 0) relative to the padding box of the land in the

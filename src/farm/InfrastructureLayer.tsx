@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import {
-  GRID, INFRA_SCALE, buildGapPath, buildInfraPaths, getOverlaySize,
+  GRID, getInfrastructureScale, buildGapPath, buildInfraPaths, getOverlaySize,
   type InfraKind, type InfraPaths, type KindGrid,
 } from './infrastructure';
 
@@ -41,8 +41,7 @@ const WATER_LAYERS: Layer[] = [
   { w: 20, color: '#ffffff', opacity: 0.17, detail: true, dash: '0 18 1.4 38 2.2 27 1.2 51', className: 'farm-water-flow' },
   { w: 11, color: '#ffffff', opacity: 0.15, detail: true, dash: '0 22 1.2 46 1.6 31', className: 'farm-water-flow farm-water-flow--slow' },
 ];
-// Rounded dead ends: cap radius equals half of the widest layer.
-const WATER_CAP = (WATER_LAYERS[0].w * INFRA_SCALE) / 2;
+// Rounded dead ends: cap radius is resolved against the active runtime spacing.
 
 // ---- Road: compacted earth, crowned centre, worn tracks -----------------------
 const ROAD_LAYERS: Layer[] = [
@@ -72,7 +71,6 @@ const DRAIN_LAYERS: Layer[] = [
   // No cross-joint dashes: a fixed dash pattern cannot avoid junction mouths on
   // chains of arbitrary length, and stray ticks across a junction look broken.
 ];
-const DRAIN_CAP = DRAIN_WALL * INFRA_SCALE;
 
 const GAP_COLOR = '#e0dac4';
 
@@ -88,7 +86,7 @@ function Bands({
           key={i}
           className={layer.detail ? 'farm-infra-detail' : undefined}
           stroke={layer.color}
-          strokeWidth={layer.w * INFRA_SCALE}
+          strokeWidth={layer.w * getInfrastructureScale()}
           strokeLinejoin="round"
           // Dashed ripple layers must stay butt-capped or the dashes turn into dots.
           strokeLinecap={roundCaps && !layer.dash ? 'round' : 'butt'}
@@ -107,20 +105,20 @@ function Bands({
 }
 
 export const InfrastructureLayer = React.memo(function InfrastructureLayer({
-  grid, origin,
-}: { grid: KindGrid; /** Where cell (0,0) is drawn (orientation dependent, see getGridOrigin). */ origin: { left: number; top: number } }) {
-  // Recomputed only when the infrastructure itself changes (signature), never
-  // because a tree was edited.
+  grid, origin, gridGap,
+}: { grid: KindGrid; /** Where cell (0,0) is drawn (orientation dependent, see getGridOrigin). */ origin: { left: number; top: number }; gridGap: number }) {
+  // Geometry depends on both the saved network and the current visual cell pitch.
+  // A spacing change deliberately rebuilds only these compact SVG paths.
+  const scale = getInfrastructureScale();
   const geometry = useMemo(() => {
     const out: Partial<Record<InfraKind, InfraPaths>> & { gap?: InfraPaths; drainageInner?: InfraPaths } = {};
     out.gap = { chains: '', blocks: buildGapPath(grid) };
     out.drainage = buildInfraPaths(grid, 'drainage', 0);
-    out.drainageInner = buildInfraPaths(grid, 'drainage', DRAIN_CAP);
+    out.drainageInner = buildInfraPaths(grid, 'drainage', DRAIN_WALL * scale);
     out.road = buildInfraPaths(grid, 'road', 0);
-    out.water = buildInfraPaths(grid, 'water', WATER_CAP);
+    out.water = buildInfraPaths(grid, 'water', (WATER_LAYERS[0].w * scale) / 2);
     return out;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [grid.signature]);
+  }, [grid.signature, gridGap, grid, scale]);
 
   if (!grid.hasAny) return null;
 

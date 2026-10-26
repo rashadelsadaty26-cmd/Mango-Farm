@@ -108,21 +108,25 @@ export const LANDMARK_ICON_CHOICES: { icon: string; label: string }[] = [
 // 1. Lattice <-> pixels (pixels are relative to the top-left of cell (0,0))
 // ---------------------------------------------------------------------------
 
+// Backwards-compatible default-pitch exports for the dependency-free verifier.
+// Live geometry below always reads pitchX()/pitchY() so runtime spacing is respected.
 export const PITCH_X = GRID.cellW + GRID.gap;
 export const PITCH_Y = GRID.cellH + GRID.gap;
+const pitchX = () => GRID.cellW + GRID.gap;
+const pitchY = () => GRID.cellH + GRID.gap;
 
 /** Horizontal pixel position of lattice column `h`. */
 export function xOf(h: number): number {
   return h % 2 === 0
-    ? (h / 2) * PITCH_X - GRID.gap / 2
-    : ((h - 1) / 2) * PITCH_X + GRID.cellW / 2;
+    ? (h / 2) * pitchX() - GRID.gap / 2
+    : ((h - 1) / 2) * pitchX() + GRID.cellW / 2;
 }
 
 /** Vertical pixel position of lattice row `h`. */
 export function yOf(h: number): number {
   return h % 2 === 0
-    ? (h / 2) * PITCH_Y - GRID.gap / 2
-    : ((h - 1) / 2) * PITCH_Y + GRID.cellH / 2;
+    ? (h / 2) * pitchY() - GRID.gap / 2
+    : ((h - 1) / 2) * pitchY() + GRID.cellH / 2;
 }
 
 export function slotToPixel(slot: SlotPos): { x: number; y: number } {
@@ -282,8 +286,8 @@ export function pixelToSlot(px: number, py: number, rows: number, cols: number):
   const xMin = 1, xMax = 2 * cols - 1, yMin = 1, yMax = 2 * rows - 1;
 
   // Only search lattice indices near the point (keeps this O(1) on a 120-wide lattice).
-  const nearX = Math.max(xMin, Math.min(xMax, Math.round((px / PITCH_X) * 2)));
-  const nearY = Math.max(yMin, Math.min(yMax, Math.round((py / PITCH_Y) * 2)));
+  const nearX = Math.max(xMin, Math.min(xMax, Math.round((px / pitchX()) * 2)));
+  const nearY = Math.max(yMin, Math.min(yMax, Math.round((py / pitchY()) * 2)));
   const xLo = Math.max(xMin, nearX - 3), xHi = Math.min(xMax, nearX + 3);
   const yLo = Math.max(yMin, nearY - 3), yHi = Math.min(yMax, nearY + 3);
 
@@ -304,7 +308,7 @@ export function pixelToSlot(px: number, py: number, rows: number, cols: number):
 
 /**
  * Human text for a slot, built from the display coordinates of its neighbours,
- * e.g. "بين 003-004 و 003-005". `describeAt(row, col)` is the app's existing
+ * e.g. "بين 3-04 و 3-05". `describeAt(row, col)` is the app's existing
  * coordinate formatter.
  */
 export function describeSlot(
@@ -659,8 +663,8 @@ function axisHit(v: number, pitch: number, size: number, count: number, slack: n
 export function pickSlotAtPixel(px: number, py: number, rows: number, cols: number, slack = 0): SlotPos | null {
   const sx = Math.max(0, Math.min(slack, GRID.cellW * 0.4));
   const sy = Math.max(0, Math.min(slack, GRID.cellH * 0.4));
-  const hx = axisHit(px, PITCH_X, GRID.cellW, cols, sx);
-  const hy = axisHit(py, PITCH_Y, GRID.cellH, rows, sy);
+  const hx = axisHit(px, pitchX(), GRID.cellW, cols, sx);
+  const hy = axisHit(py, pitchY(), GRID.cellH, rows, sy);
   if (!hx || !hy || (hx.tree && hy.tree)) return null;
   return { x: hx.h, y: hy.h };
 }

@@ -18,10 +18,11 @@ export interface MapCellProps {
   /** Row/column gap kind regardless of cell type (blank cells in a gap draw nothing). */
   gapKind: string | null;
   label: string;
-  /** Human-readable coordinate (e.g. "012-007") used in tooltips. Display only - `cellId` stays the storage key. */
+  /** Human-readable coordinate (e.g. "12-07") used in tooltips. Display only - `cellId` stays the storage key. */
   coordinate: string;
   editMode: boolean;
   selected: boolean;
+  analyticsHighlight?: boolean;
 }
 
 function StatusBadge({
@@ -68,7 +69,7 @@ function describeTree(coordinate: string, data: TreeDataLike | undefined): strin
   return parts.join(' — ');
 }
 
-function MapCellImpl({ cellId, data, infraKind, gapKind, label, coordinate, editMode, selected }: MapCellProps) {
+function MapCellImpl({ cellId, data, infraKind, gapKind, label, coordinate, editMode, selected, analyticsHighlight = false }: MapCellProps) {
   const type = data?.type || 'tree';
   const isInfra = infraKind !== null;
 
@@ -107,6 +108,7 @@ function MapCellImpl({ cellId, data, infraKind, gapKind, label, coordinate, edit
       data-cell-id={cellId}
       data-infra-kind={isInfra ? infraKind : undefined}
       data-selected={selected ? 'true' : undefined}
+      data-analytics-highlight={analyticsHighlight ? 'true' : undefined}
       className={`farm-map-cell relative w-full h-full flex items-center justify-center ${isInfra ? 'farm-map-infrastructure-cell' : ''} ${
         editMode ? 'cursor-pointer hover:bg-white/30' : type === 'tree' ? 'cursor-pointer' : 'cursor-default'
       }`}

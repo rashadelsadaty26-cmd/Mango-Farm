@@ -3,12 +3,12 @@
 //
 // FORMAT
 //   row     plain number, no leading zeros        1, 2, 10, 25
-//   column  zero-padded to a CONSISTENT width     01, 02, 09, 10, 22   (060 on a 100+ column farm)
-//   tree    "<row>-<column>"                      "1-01", "12-07", "30-60"
+//   column  literal zero + ordinary decimal       01, 09, 010, 058, 0100
+//   tree    "<row>-<column>"                      "1-01", "2-09", "10-010"
 //
-// Padding only the column keeps the two parts distinguishable at a glance
-// ("3-04" can only be row 3, column 4) and a coordinate is unambiguous: the row
-// never has a leading zero and every column has the same width.
+// The column always begins with one literal zero, followed by its ordinary
+// decimal representation. It is intentionally NOT fixed-width padding: 10 ->
+// "010", 58 -> "058", and 100 -> "0100".
 //
 // IMPORTANT: this module never produces or changes storage identifiers.
 // Firestore / localStorage keep using the original cell ids (`<rowLetter>-<n>`,
@@ -23,8 +23,8 @@
 // a coordinate is unique per cell by construction.
 // ============================================================================
 
-/** Smallest width of a column number ("01"). Wider farms grow it for ALL columns (see columnDigits). */
-export const MIN_COLUMN_DIGITS = 2;
+/** Kept for backwards-compatible utility signatures; the display rule is a literal zero prefix. */
+export const MIN_COLUMN_DIGITS = 1;
 
 /** 12 -> "12". Rows are never padded. Non-positive / non-integer input yields ''. */
 export function formatRowNumber(n: number): string {
@@ -32,20 +32,15 @@ export function formatRowNumber(n: number): string {
   return String(n);
 }
 
-/**
- * Width every column number is padded to: at least 2, and as many digits as the
- * LARGEST column number needs, so all column labels of one farm share a width
- * (60 columns -> 2 digits "01".."60"; 100+ columns -> 3 digits "001".."120").
- */
-export function columnDigits(largestColumnNumber: number): number {
-  const digits = Number.isInteger(largestColumnNumber) && largestColumnNumber > 0 ? String(largestColumnNumber).length : 0;
-  return Math.max(MIN_COLUMN_DIGITS, digits);
+/** Legacy width helper. The requested format does not use fixed-width padding. */
+export function columnDigits(_largestColumnNumber: number): number {
+  return 1;
 }
 
-/** 7 -> "07" (width 2) / "007" (width 3). Non-positive / non-integer input yields ''. */
-export function formatColumnNumber(n: number, digits: number = MIN_COLUMN_DIGITS): string {
+/** 7 -> "07", 10 -> "010", 58 -> "058", 100 -> "0100". */
+export function formatColumnNumber(n: number, _digits: number = MIN_COLUMN_DIGITS): string {
   if (!Number.isInteger(n) || n < 1) return '';
-  return String(n).padStart(Math.max(MIN_COLUMN_DIGITS, digits), '0');
+  return `0${n}`;
 }
 
 /**
@@ -74,10 +69,10 @@ export function formatCoordinate(rowNumber: number | null, colNumber: number | n
 export interface CoordinateMap {
   /** Header text per physical row, no leading zeros ('' for an unnumbered row). */
   rowLabels: string[];
-  /** Zero-padded header text per physical column ('' for an unnumbered column). */
+  /** Column text (literal zero prefix) per physical column ('' for an unnumbered column). */
   colLabels: string[];
   /** Coordinate of the cell at a physical position, or null when its row/column is unnumbered. */
-  /** Width every column number is padded to on this farm. */
+  /** Legacy compatibility field. The column format is always a single zero prefix. */
   colDigits: number;
   coordinateAt: (rowIndex: number, colIndex: number) => string | null;
   /**
