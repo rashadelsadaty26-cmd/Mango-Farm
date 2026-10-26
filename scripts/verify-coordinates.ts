@@ -23,40 +23,42 @@ const allCoords = (rows: number, cols: number, ur: number[] = [], uc: number[] =
 };
 
 console.log('Format');
-test('rows have no leading zeros, columns are zero-padded, invalid -> empty', () => {
+test('rows have no leading zeros; columns use exactly one literal zero prefix; invalid -> empty', () => {
   assert.equal(formatRowNumber(1), '1'); assert.equal(formatRowNumber(10), '10'); assert.equal(formatRowNumber(25), '25');
   assert.equal(formatRowNumber(0), ''); assert.equal(formatRowNumber(-3), ''); assert.equal(formatRowNumber(1.5), '');
-  assert.equal(formatColumnNumber(1), '01'); assert.equal(formatColumnNumber(9), '09'); assert.equal(formatColumnNumber(10), '10'); assert.equal(formatColumnNumber(22), '22');
-  assert.equal(formatColumnNumber(10, 3), '010'); assert.equal(formatColumnNumber(22, 3), '022'); assert.equal(formatColumnNumber(0), '');
+  assert.equal(formatColumnNumber(1), '01'); assert.equal(formatColumnNumber(9), '09'); assert.equal(formatColumnNumber(10), '010'); assert.equal(formatColumnNumber(22), '022');
+  assert.equal(formatColumnNumber(58), '058'); assert.equal(formatColumnNumber(60), '060'); assert.equal(formatColumnNumber(99), '099'); assert.equal(formatColumnNumber(100), '0100'); assert.equal(formatColumnNumber(1250), '01250'); assert.equal(formatColumnNumber(10, 3), '010'); assert.equal(formatColumnNumber(0), '');
 });
-test('column width is consistent and grows only when the farm needs it (min 2)', () => {
-  assert.equal(columnDigits(0), 2); assert.equal(columnDigits(9), 2); assert.equal(columnDigits(60), 2); assert.equal(columnDigits(99), 2);
-  assert.equal(columnDigits(100), 3); assert.equal(columnDigits(120), 3);
+test('column format always prefixes one zero, including at 100 and beyond', () => {
+  assert.equal(columnDigits(0), 1); assert.equal(columnDigits(9), 1); assert.equal(columnDigits(60), 1); assert.equal(columnDigits(100), 1);
   const wide = buildCoordinateMap(3, 120, [], []);
-  assert.equal(wide.colDigits, 3); assert.ok(wide.colLabels.every((l) => l.length === 3));
-  assert.equal(wide.colLabels[9], '010'); assert.equal(wide.colLabels[21], '022'); assert.equal(wide.coordinateAt(2, 119), '3-120');
-  const normal = buildCoordinateMap(30, 60, [], []); assert.ok(normal.colLabels.every((l) => l.length === 2));
+  assert.equal(wide.colDigits, 1);
+  assert.equal(wide.colLabels[0], '01'); assert.equal(wide.colLabels[8], '09'); assert.equal(wide.colLabels[9], '010');
+  assert.equal(wide.colLabels[57], '058'); assert.equal(wide.colLabels[59], '060'); assert.equal(wide.colLabels[99], '0100'); assert.equal(wide.colLabels[119], '0120');
+  assert.equal(wide.coordinateAt(2, 119), '3-0120');
 });
-test('examples: 1-01, 1-12, 12-07, 30-60 (and row 1 / column 01 can never be confused)', () => {
+test('exact examples: 1-01, 2-09, 10-010, 20-058, 30-060, 3-0100', () => {
   const { m } = allCoords(30, 60);
   assert.equal(m.coordinateAt(0, 0), '1-01');
-  assert.equal(m.coordinateAt(0, 11), '1-12');
-  assert.equal(m.coordinateAt(11, 6), '12-07');
-  assert.equal(m.coordinateAt(29, 59), '30-60');
+  assert.equal(m.coordinateAt(1, 8), '2-09');
+  assert.equal(m.coordinateAt(9, 9), '10-010');
+  assert.equal(m.coordinateAt(19, 57), '20-058');
+  assert.equal(m.coordinateAt(29, 59), '30-060');
+  assert.equal(buildCoordinateMap(3, 100, [], []).coordinateAt(2, 99), '3-0100');
   assert.equal(formatCoordinate(null, 5), null);
-  // Parsing "<row>-<col>" back is unambiguous: the row never has a leading zero, the column always has the farm's width.
+  // Column text starts with exactly one zero; row numbers are ordinary decimals.
   const all = allCoords(30, 60).out;
-  for (const c of all) assert.match(c, /^[1-9]\d*-\d{2}$/);
+  for (const c of all) assert.match(c, /^[1-9]\d*-0[1-9]\d*$/);
 });
 
 console.log('Boundaries');
 test('rows 9/10 and columns 9/10 and the final row/column', () => {
   const { m } = allCoords(30, 60);
   assert.equal(m.coordinateAt(8, 8), '9-09');
-  assert.equal(m.coordinateAt(8, 9), '9-10');
+  assert.equal(m.coordinateAt(8, 9), '9-010');
   assert.equal(m.coordinateAt(9, 8), '10-09');
-  assert.equal(m.coordinateAt(9, 9), '10-10');
-  assert.equal(m.rowLabels[29], '30'); assert.equal(m.colLabels[59], '60');
+  assert.equal(m.coordinateAt(9, 9), '10-010');
+  assert.equal(m.rowLabels[29], '30'); assert.equal(m.colLabels[59], '060');
   assert.equal(m.rowLabels[0], '1'); assert.equal(m.colLabels[0], '01');
 });
 
@@ -92,14 +94,14 @@ test('spec example: 8, 9, [blank], 10, 11 for rows and for columns', () => {
   assert.deepEqual(n.slice(6, 11), [7, 8, null, 9, 10]);
   const m = buildCoordinateMap(12, 12, [9], [9]); // blank is the 10th physical row/column
   assert.deepEqual(m.rowLabels.slice(7, 12), ['8', '9', '', '10', '11']);
-  assert.deepEqual(m.colLabels.slice(7, 12), ['08', '09', '', '10', '11']);
-  assert.equal(m.coordinateAt(10, 10), '10-10'); // physically row/col 11, visibly 10
+  assert.deepEqual(m.colLabels.slice(7, 12), ['08', '09', '', '010', '011']);
+  assert.equal(m.coordinateAt(10, 10), '10-010'); // physically row/col 11, visibly 10
 });
 test('trees BEFORE an unnumbered row/column keep their coordinate; only later ones continue the sequence', () => {
   const before = buildCoordinateMap(30, 60, [], []);
   const after = buildCoordinateMap(30, 60, [14], [29]);
   for (let r = 0; r < 14; r++) for (let c = 0; c < 29; c++) assert.equal(after.coordinateAt(r, c), before.coordinateAt(r, c));
-  assert.equal(after.coordinateAt(15, 30), '15-30'); // physical (16, 31) continues from the blank
+  assert.equal(after.coordinateAt(15, 30), '15-030'); // physical (16, 31) continues from the blank
 });
 test('describeAt falls back to the physical position for an unnumbered cell', () => {
   const m = buildCoordinateMap(10, 10, [4], []);
@@ -115,7 +117,7 @@ test('appending rows/columns never changes an existing coordinate and never dupl
   for (let r = 0; r < 30; r++) for (let c = 0; c < 60; c++) assert.equal(grown.coordinateAt(r, c), base.coordinateAt(r, c));
   const all = allCoords(33, 64, ur, uc).out;
   assert.equal(new Set(all).size, all.length);
-  assert.equal(grown.coordinateAt(32, 63), '32-63');
+  assert.equal(grown.coordinateAt(32, 63), '32-063');
 });
 test('an unnumbered index beyond the grid size is harmless', () => {
   const { out } = allCoords(5, 5, [99], [-1]);

@@ -118,8 +118,8 @@ test('validation of name and icon', () => {
 
 console.log('Descriptions');
 test('slots are described with the app\'s own coordinates', () => {
-  const at = (r: number, c: number) => `${String(r + 1).padStart(3, '0')}-${String(c + 1).padStart(3, '0')}`;
-  assert.equal(describeSlot({ x: 2, y: 1 }, at, ROWS, COLS), 'بين 001-001 و 001-002');
+  const at = (r: number, c: number) => `${r + 1}-0${c + 1}`;
+  assert.equal(describeSlot({ x: 2, y: 1 }, at, ROWS, COLS), 'بين 1-01 و 1-02');
   assert.match(describeSlot({ x: 2, y: 2 }, at, ROWS, COLS), /4 أشجار/);
 });
 
