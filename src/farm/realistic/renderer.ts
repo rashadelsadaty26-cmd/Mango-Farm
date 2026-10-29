@@ -23,10 +23,9 @@
 // ============================================================================
 
 import {
-  GRID, INFRA_SCALE, buildGapPath, buildInfraPaths,
+  GRID, buildGapPath, buildInfraPaths, getInfrastructureScale,
   type InfraPaths,
 } from '../infrastructure.ts';
-import { PITCH_X, PITCH_Y } from '../landmarks.ts';
 import type { RealisticDisplayOptions } from './quality.ts';
 import {
   CELL_BASIN, CELL_EMPTY, CELL_NONE, CELL_TREE,
@@ -72,9 +71,9 @@ const CANOPY_D = GRID.cellW * 0.94;
 /** Sprites keep a margin around the crown (for the lobes' edge), so they are drawn a bit larger. */
 const SPRITE_SCALE = 1.14;
 
-// Kept in sync with InfrastructureLayer.tsx: the cap radii decide where dead ends stop.
-const WATER_CAP = (44 * INFRA_SCALE) / 2;
-const DRAIN_CAP = 4 * INFRA_SCALE;
+// The cell gap is user-adjustable (GRID.gap is mutable), so pitch and stroke scale are read live.
+const pitchX = () => GRID.cellW + GRID.gap;
+const pitchY = () => GRID.cellH + GRID.gap;
 
 interface Layer {
   /** Width in design units; multiplied by INFRA_SCALE like the standard layer. */
@@ -255,8 +254,13 @@ export class RealisticRenderer {
   }
 
   private ensureInfra(scene: FarmScene) {
-    const sig = scene.infra.signature;
+    // Geometry depends on the network AND the current cell pitch (spacing setting).
+    const sig = `${scene.infra.signature}|${GRID.gap}`;
     if (this.infraPaths && this.infraSig === sig) return;
+    const scale = getInfrastructureScale();
+    // Same cap radii as InfrastructureLayer: they decide where dead ends stop.
+    const WATER_CAP = (44 * scale) / 2;
+    const DRAIN_CAP = 4 * scale;
     const wrap = (p: InfraPaths): KindPaths => ({
       chains: p.chains ? new this.P2D(p.chains) : null,
       blocks: p.blocks ? new this.P2D(p.blocks) : null,
@@ -373,7 +377,7 @@ export class RealisticRenderer {
       const style = layer.style.startsWith('pat:') ? this.pattern(layer.style.slice(4) as 'road' | 'water' | 'concrete') : layer.style;
       ctx.strokeStyle = style;
       ctx.fillStyle = style;
-      ctx.lineWidth = layer.w * INFRA_SCALE;
+      ctx.lineWidth = layer.w * getInfrastructureScale();
       ctx.lineCap = layer.dash ? 'butt' : cap;
       ctx.setLineDash(layer.dash ?? []);
       ctx.globalAlpha = layer.alpha ?? 1;
@@ -410,10 +414,10 @@ export class RealisticRenderer {
     const { rows, cols, cls, flags, accent, seed } = scene;
     // Visible block of the display lattice: O(visible cells), never O(all cells).
     const margin = CANOPY_D;
-    const c0 = Math.max(0, Math.floor((gx0 - margin) / PITCH_X));
-    const c1 = Math.min(cols - 1, Math.floor((gx1 + margin) / PITCH_X));
-    const r0 = Math.max(0, Math.floor((gy0 - margin) / PITCH_Y));
-    const r1 = Math.min(rows - 1, Math.floor((gy1 + margin) / PITCH_Y));
+    const c0 = Math.max(0, Math.floor((gx0 - margin) / pitchX()));
+    const c1 = Math.min(cols - 1, Math.floor((gx1 + margin) / pitchX()));
+    const r0 = Math.max(0, Math.floor((gy0 - margin) / pitchY()));
+    const r1 = Math.min(rows - 1, Math.floor((gy1 + margin) / pitchY()));
     if (c1 < c0 || r1 < r0) { this.stats.treesDrawn = 0; return; }
 
     const canopies = this.assets.canopies;
@@ -435,7 +439,7 @@ export class RealisticRenderer {
         const i = r * cols + c;
         const k = cls[i];
         if (k !== CELL_TREE && k !== CELL_EMPTY) continue;
-        ctx.drawImage(this.assets.basin, c * PITCH_X + halfW - 44, r * PITCH_Y + halfH - 44, 88, 88);
+        ctx.drawImage(this.assets.basin, c * pitchX() + halfW - 44, r * pitchY() + halfH - 44, 88, 88);
       }
       ctx.globalAlpha = 1;
     }
@@ -448,15 +452,15 @@ export class RealisticRenderer {
       const d = CANOPY_D * SPRITE_SCALE * sizeOf(f, k) * (0.93 + ((seed[i] >>> 4) % 100) / 700);
       const variant = canopies[seed[i] % nVar];
       const sh = d * 1.5;
-      ctx.drawImage(variant.shadow, c * PITCH_X + halfW - sh / 2 + d * 0.12, r * PITCH_Y + halfH - sh / 2 + d * 0.16, sh, sh);
+      ctx.drawImage(variant.shadow, c * pitchX() + halfW - sh / 2 + d * 0.12, r * pitchY() + halfH - sh / 2 + d * 0.16, sh, sh);
     }
 
     // Pass 2: canopies (+ stumps for uprooted trees).
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
       const i = r * cols + c;
       const k = cls[i];
-      const x = c * PITCH_X + halfW;
-      const y = r * PITCH_Y + halfH;
+      const x = c * pitchX() + halfW;
+      const y = r * pitchY() + halfH;
       if (k === CELL_BASIN) {
         ctx.save();
         ctx.translate(x, y);
@@ -495,7 +499,7 @@ export class RealisticRenderer {
       for (let r = r0; r <= r1 && budget > 0; r++) for (let c = c0; c <= c1 && budget > 0; c++) {
         const i = r * cols + c;
         if (cls[i] !== CELL_TREE || (flags[i] & FLAG_UPROOTED)) continue;
-        this.paintLeafDetail(ctx, c * PITCH_X + halfW, r * PITCH_Y + halfH, CANOPY_D * sizeOf(flags[i], CELL_TREE), seed[i], s);
+        this.paintLeafDetail(ctx, c * pitchX() + halfW, r * pitchY() + halfH, CANOPY_D * sizeOf(flags[i], CELL_TREE), seed[i], s);
         budget--;
       }
     }
@@ -506,8 +510,8 @@ export class RealisticRenderer {
         const i = r * cols + c;
         const k = cls[i];
         if (k !== CELL_TREE && k !== CELL_EMPTY) continue;
-        const x = c * PITCH_X + halfW;
-        const y = r * PITCH_Y + halfH;
+        const x = c * pitchX() + halfW;
+        const y = r * pitchY() + halfH;
         const f = flags[i];
         const d = CANOPY_D * sizeOf(f, k);
         if (k === CELL_EMPTY) { this.paintEmptyMark(ctx, x, y, d, s); continue; }
@@ -685,10 +689,10 @@ export class RealisticRenderer {
       // Basin labels: only when it is close enough to read, to keep the orchard uncluttered.
       if (s >= 0.7) {
         const { rows, cols, cls } = scene;
-        const c0 = Math.max(0, Math.floor(gx0 / PITCH_X)); const c1 = Math.min(cols - 1, Math.floor(gx1 / PITCH_X));
-        const r0 = Math.max(0, Math.floor(gy0 / PITCH_Y)); const r1 = Math.min(rows - 1, Math.floor(gy1 / PITCH_Y));
+        const c0 = Math.max(0, Math.floor(gx0 / pitchX())); const c1 = Math.min(cols - 1, Math.floor(gx1 / pitchX()));
+        const r0 = Math.max(0, Math.floor(gy0 / pitchY())); const r1 = Math.min(rows - 1, Math.floor(gy1 / pitchY()));
         for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-          if (cls[r * cols + c] === CELL_BASIN) labels.push({ text: 'حوض رش', x: c * PITCH_X + GRID.cellW / 2, y: r * PITCH_Y + GRID.cellH / 2 + GRID.cellH * 0.45 });
+          if (cls[r * cols + c] === CELL_BASIN) labels.push({ text: 'حوض رش', x: c * pitchX() + GRID.cellW / 2, y: r * pitchY() + GRID.cellH / 2 + GRID.cellH * 0.45 });
         }
       }
       const px = 12 / s; // constant ~12 screen px

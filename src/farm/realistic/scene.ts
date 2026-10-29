@@ -17,7 +17,7 @@
 
 import { GRID, kindAt, type KindGrid } from '../infrastructure.ts';
 import { displayCell, mirrorSlot, type MapOrientation } from '../orientation.ts';
-import { PITCH_X, PITCH_Y, slotToPixel, stackOffsets, type LandmarkMap } from '../landmarks.ts';
+import { slotToPixel, stackOffsets, type LandmarkMap } from '../landmarks.ts';
 import {
   getTreeHealthFlags, getVarietyAccent,
   type RetiredKind, type TreeDataLike,
@@ -175,14 +175,14 @@ export function buildScene(input: SceneInput): FarmScene {
     rows, cols, cls, flags, accent, seed, ids,
     infra: input.displayKindGrid,
     landmarks,
-    width: cols * PITCH_X - GRID.gap,
-    height: rows * PITCH_Y - GRID.gap,
+    width: cols * (GRID.cellW + GRID.gap) - GRID.gap,
+    height: rows * (GRID.cellH + GRID.gap) - GRID.gap,
   };
 }
 
 /** Grid-space centre of display cell (displayRow, displayCol). */
 export function cellCenter(displayRow: number, displayCol: number): { x: number; y: number } {
-  return { x: displayCol * PITCH_X + GRID.cellW / 2, y: displayRow * PITCH_Y + GRID.cellH / 2 };
+  return { x: displayCol * (GRID.cellW + GRID.gap) + GRID.cellW / 2, y: displayRow * (GRID.cellH + GRID.gap) + GRID.cellH / 2 };
 }
 
 /** Kind of infrastructure at a LOGICAL cell, re-exported for tests that compare with the standard map. */

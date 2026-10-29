@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef } from 'react';
 import type { KindGrid } from '../infrastructure';
 import type { LandmarkMap } from '../landmarks';
-import type { MapOrientation } from '../orientation';
+import { GRID } from '../infrastructure';
+import { getGridOrigin, type MapOrientation } from '../orientation';
 import type { QualityName, RealisticDisplayOptions } from './quality';
 import { REALISTIC_MESSAGES } from './useRealisticMode';
 import { QUALITY_PROFILES, supportsCanvas2D } from './quality';
@@ -76,8 +77,9 @@ export function RealisticLayer(props: RealisticLayerProps) {
       landY: land.offsetTop,
       landW: land.offsetWidth,
       landH: land.offsetHeight,
-      gridX: land.offsetLeft + land.clientLeft + p.gridOrigin.left,
-      gridY: land.offsetTop + land.clientTop + p.gridOrigin.top,
+      // Read live: the origin depends on the orientation and on the (adjustable) cell gap.
+      gridX: land.offsetLeft + land.clientLeft + getGridOrigin(p.orientation).left,
+      gridY: land.offsetTop + land.clientTop + getGridOrigin(p.orientation).top,
     });
     r.resize(container.clientWidth, container.clientHeight, window.devicePixelRatio || 1);
   }, []);
@@ -147,10 +149,12 @@ export function RealisticLayer(props: RealisticLayerProps) {
   }, [quality, sync, measure]);
 
   // ---- Farm data / options / visibility changed. ----
+  // The cell gap is a live setting; a change re-renders the app, and this makes the scene follow it.
+  const gridGap = GRID.gap;
   const { rows, cols, rowLabels, cells, orientation, displayKindGrid, kindGrid, rowGapKinds, colGapKinds, landmarks, gridOrigin, options, visible } = props;
   useEffect(() => {
     sync();
-  }, [sync, rows, cols, rowLabels, cells, orientation, displayKindGrid, kindGrid, rowGapKinds, colGapKinds, landmarks, gridOrigin, options, visible]);
+  }, [sync, rows, cols, rowLabels, cells, orientation, displayKindGrid, kindGrid, rowGapKinds, colGapKinds, landmarks, gridOrigin, gridGap, options, visible]);
 
   // ---- Leaving Realistic mode: release everything. ----
   useEffect(() => {
