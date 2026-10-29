@@ -395,20 +395,22 @@ body {
 
 /* ---- Mobile header: collapses on map swipes (phones only, see App.tsx) ----------- */
 /* The wrapper is a transparent pass-through everywhere except small screens, so the
-   desktop header keeps its existing layout.
+   desktop header is byte-for-byte the same layout as before.
 
-   The header slide and row collapse share one responsive duration and easing curve,
-   so the header edge and the map viewport follow one continuous motion.
-   HEADER_ANIM_MS in App.tsx must match --farm-header-ms.
+   Timing: the slide used to take 280ms (opacity 220ms). Both are now three times
+   slower. --farm-header-ms is the ONE duration: the row collapse and the header's
+   slide share it and the same curve, so they stay locked together (the header's
+   bottom edge always coincides with the collapsing row's edge) and the map below
+   follows one continuous motion. HEADER_ANIM_MS in App.tsx must match it.
 
    Only compositor-friendly properties are animated on the header itself
    (transform, opacity). The row collapse is the one layout transition, and it is
    needed so the map viewport grows/shrinks with the header; the map follows it
    without re-laying-out its contents. */
 :root {
-  --farm-header-ms: 560ms;
-  --farm-header-fade-ms: 360ms;
-  --farm-header-ease: cubic-bezier(0.16, 1, 0.3, 1);
+  --farm-header-ms: 840ms;
+  --farm-header-fade-ms: 660ms;
+  --farm-header-ease: cubic-bezier(0.4, 0, 0.2, 1);
 }
 .farm-header-collapse { position: relative; z-index: 20; }
 .farm-header-handle { display: none; }
@@ -479,144 +481,53 @@ body {
   .farm-header-handle { transition: none !important; }
 }
 
-/* ---- Farm analytics: a separate application destination -------------------- */
-.farm-analytics-view {
-  box-sizing: border-box;
+
+/* ==========================================================================
+   Realistic (drone view) mode
+   The canvas sits BEHIND the transformed map. The DOM cells stay in place as the
+   invisible hit-test / selection layer; only their icon artwork is hidden.
+   ========================================================================== */
+.farm-realistic-canvas {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 100%;
   height: 100%;
-  overflow: auto;
-  padding: clamp(14px, 2vw, 28px);
-  background: #f4f7f3;
-  color: #172b24;
+  pointer-events: none;
+  z-index: 0;
 }
-.farm-analytics-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; margin: 0 auto 20px; max-width: 1600px; }
-.farm-analytics-heading h2 { margin: 0; font-size: clamp(24px, 2.1vw, 32px); font-weight: 850; letter-spacing: -.025em; color: #123b2b; }
-.farm-analytics-heading p { margin: 7px 0 0; color: #64756c; font-size: 13px; line-height: 1.7; }
-.farm-analytics-eyebrow { display: flex; align-items: center; gap: 7px; margin: 0 0 6px !important; color: #0b8060 !important; font-size: 12px !important; font-weight: 800; }
-.farm-analytics-sync { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 8px 12px; border: 1px solid #d5e3d9; border-radius: 999px; background: #fff; color: #355a49; font-size: 12px; font-weight: 800; }
-.farm-analytics-sync-dot { width: 8px; height: 8px; border-radius: 50%; background: #16a34a; }
-.farm-analytics-sync--offline .farm-analytics-sync-dot, .farm-analytics-sync--error .farm-analytics-sync-dot { background: #d97706; }
-.farm-analytics-sync--syncing .farm-analytics-sync-dot { background: #0284c7; animation: farm-analytics-pulse 1.2s ease-in-out infinite; }
-@keyframes farm-analytics-pulse { 50% { opacity: .35; } }
-.farm-analytics-warning { max-width: 1600px; margin: 0 auto 14px; display: flex; align-items: center; gap: 9px; background: #fff7ed; border: 1px solid #fed7aa; color: #9a3412; padding: 11px 14px; border-radius: 12px; font-size: 13px; }
-.farm-analytics-kpis { max-width: 1600px; margin: 0 auto 18px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
-.farm-analytics-kpi { position: relative; display: flex; min-width: 0; flex-direction: column; align-items: flex-start; gap: 6px; padding: 16px; border: 1px solid #e0e8e1; border-radius: 16px; background: #fff; text-align: right; box-shadow: 0 2px 5px rgba(17, 54, 38, .025); transition: border-color .15s ease, transform .15s ease, box-shadow .15s ease; }
-.farm-analytics-kpi:hover { border-color: #9fcbb4; transform: translateY(-1px); box-shadow: 0 8px 18px rgba(17, 54, 38, .07); }
-.farm-analytics-kpi-icon { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; color: #067052; background: #e5f5ec; }
-.farm-analytics-kpi-icon--green { color: #166534; background: #dcfce7; }
-.farm-analytics-kpi-icon--muted { color: #64748b; background: #f1f5f9; }
-.farm-analytics-kpi-icon--amber { color: #b45309; background: #fef3c7; }
-.farm-analytics-kpi-label { color: #5d7065; font-size: 12px; font-weight: 750; }
-.farm-analytics-kpi strong { color: #133c2b; font-size: clamp(24px, 2.2vw, 31px); line-height: 1.1; font-variant-numeric: tabular-nums; }
-.farm-analytics-kpi small { color: #8a9a91; font-size: 10px; line-height: 1.5; }
-.farm-analytics-grid { max-width: 1600px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin: 0 auto 16px; }
-.farm-analytics-card { min-width: 0; overflow: hidden; border: 1px solid #e0e8e1; border-radius: 16px; background: #fff; box-shadow: 0 2px 5px rgba(17, 54, 38, .025); }
-.farm-analytics-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 17px 18px 13px; border-bottom: 1px solid #eef2ee; }
-.farm-analytics-card-head h3 { margin: 0; color: #173c2c; font-size: 15px; font-weight: 850; }
-.farm-analytics-card-head p { margin: 4px 0 0; color: #829087; font-size: 11px; line-height: 1.6; }
-.farm-analytics-bars { display: grid; gap: 2px; padding: 12px 18px 18px; }
-.farm-analytics-bar-row { display: grid; grid-template-columns: minmax(75px, 1.1fr) minmax(50px, 2fr) 35px; align-items: center; gap: 10px; width: 100%; padding: 7px 6px; border: 1px solid transparent; border-radius: 8px; background: transparent; text-align: right; }
-.farm-analytics-bar-row:hover, .farm-analytics-bar-row.is-active { border-color: #d7eade; background: #f4fbf6; }
-.farm-analytics-bar-label { color: #4b5f54; font-size: 12px; overflow-wrap: anywhere; }
-.farm-analytics-bar-track { height: 9px; overflow: hidden; border-radius: 999px; background: #edf3ee; }
-.farm-analytics-bar-track i { display: block; height: 100%; min-width: 3px; border-radius: inherit; background: linear-gradient(90deg, #10b981, #047857); }
-.farm-analytics-bar-track--blue i { background: linear-gradient(90deg, #60a5fa, #2563eb); }
-.farm-analytics-bar-row strong { color: #244333; font-size: 12px; text-align: left; font-variant-numeric: tabular-nums; }
-.farm-analytics-link { display: inline-flex; align-items: center; gap: 7px; margin: 0 18px 16px; padding: 8px 10px; border: 1px solid #cce8d8; border-radius: 9px; background: #f3fbf5; color: #08734f; font-size: 11px; font-weight: 800; }
-.farm-analytics-link:hover { background: #e4f6eb; }
-.farm-analytics-empty { padding: 24px 18px; color: #819087; font-size: 12px; line-height: 1.8; }
-.farm-analytics-stat-lines { padding: 6px 18px 8px; }
-.farm-analytics-stat-lines button { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 2px; border-bottom: 1px solid #eff3ef; color: #5a6a61; font-size: 12px; text-align: right; }
-.farm-analytics-stat-lines button:last-child { border-bottom: 0; }
-.farm-analytics-stat-lines button:hover span { color: #08734f; }
-.farm-analytics-stat-lines strong { color: #173c2c; font-size: 17px; font-variant-numeric: tabular-nums; }
-.farm-analytics-footnote { margin: 0; padding: 0 18px 16px; color: #87948b; font-size: 10px; line-height: 1.75; }
-.farm-analytics-infra-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 17px 18px; }
-.farm-analytics-infra-grid > div { display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 8px; padding: 10px; border-radius: 9px; background: #f7faf7; color: #5d6c63; font-size: 11px; }
-.farm-analytics-infra-grid strong { color: #264a36; font-size: 14px; font-variant-numeric: tabular-nums; }
-.infra-swatch { width: 10px; height: 10px; border-radius: 3px; }
-.infra-swatch--road { background: #cdbf9f; }.infra-swatch--water { background: #4fa3c6; }.infra-swatch--drain { background: #667874; }
-.farm-analytics-data-row { max-width: 1600px; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0 auto 16px; }
-.farm-analytics-data-row > div { display: flex; flex-direction: column; gap: 5px; padding: 15px 17px; border: 1px solid #dfe9e1; border-radius: 13px; background: #eef5ef; }
-.farm-analytics-data-row span { color: #62766a; font-size: 11px; font-weight: 750; }
-.farm-analytics-data-row strong { color: #214634; font-size: 16px; overflow-wrap: anywhere; }
-.farm-analytics-data-row small { color: #7f8f85; font-size: 10px; line-height: 1.7; }
-.farm-analytics-table-card { max-width: 1600px; margin: 0 auto 16px; }
-.farm-analytics-table-head { align-items: center; }
-.farm-analytics-export, .farm-analytics-reset { display: inline-flex; align-items: center; justify-content: center; gap: 7px; white-space: nowrap; padding: 8px 11px; border: 1px solid #cfe3d4; border-radius: 9px; color: #176543; background: #f5fbf6; font-size: 11px; font-weight: 800; }
-.farm-analytics-export:hover, .farm-analytics-reset:hover { background: #e8f6ec; }
-.farm-analytics-filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 13px 16px; border-bottom: 1px solid #edf2ed; }
-.farm-analytics-filters label { display: flex; flex: 1 1 220px; min-width: 0; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid #dbe5dd; border-radius: 9px; background: #fff; color: #8b9a91; }
-.farm-analytics-filters input { width: 100%; min-width: 0; height: 36px; border: 0; outline: none; color: #254332; font-size: 12px; background: transparent; }
-.farm-analytics-filters select { max-width: 180px; min-width: 120px; height: 36px; padding: 0 9px; border: 1px solid #dbe5dd; border-radius: 9px; color: #42564a; background: #fff; font-size: 11px; }
-.farm-analytics-table-scroll { max-width: 100%; overflow-x: auto; }
-.farm-analytics-table { width: 100%; border-collapse: collapse; white-space: nowrap; font-size: 11px; }
-.farm-analytics-table th { padding: 12px 14px; color: #66796d; background: #f7faf7; font-weight: 850; text-align: right; }
-.farm-analytics-table td { padding: 11px 14px; color: #506258; border-top: 1px solid #eef2ee; }
-.farm-analytics-table tbody tr:hover { background: #f8fcf8; }
-.farm-analytics-coordinate { font-weight: 850; color: #1b5639 !important; font-variant-numeric: tabular-nums; }
-.farm-analytics-empty-pill { display: inline-block; padding: 3px 7px; border-radius: 999px; color: #64748b; background: #f1f5f9; font-size: 10px; }
-.farm-analytics-row-action { padding: 6px 9px; border: 1px solid #cce7d5; border-radius: 7px; color: #08734f; background: #f0faf3; font-weight: 800; font-size: 10px; }
-.farm-analytics-no-results { padding: 26px !important; text-align: center; color: #87958c !important; }
-.farm-analytics-unavailable-grid { max-width: 1600px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin: 0 auto; }
-.farm-analytics-unavailable-grid article { padding: 17px; border: 1px dashed #cbd8cf; border-radius: 13px; background: #fafcf9; }
-.farm-analytics-unavailable-grid h3 { margin: 0 0 7px; color: #3e5949; font-size: 13px; font-weight: 850; }
-.farm-analytics-unavailable-grid p { margin: 0 0 8px; color: #6e7f74; font-size: 11px; line-height: 1.8; }
-.farm-analytics-unavailable-grid small { color: #91a096; font-size: 10px; line-height: 1.7; }
-.farm-analytics-bottom-note { max-width: 1600px; margin: 16px auto 4px; color: #87958b; font-size: 10px; line-height: 1.7; }
-.farm-map-cell[data-analytics-highlight="true"] { z-index: 2; outline: 3px solid #f59e0b; outline-offset: -4px; border-radius: 12px; background: rgba(253, 230, 138, .5); }
-.farm-analytics-map-banner { position: absolute; z-index: 12; top: 12px; left: 12px; max-width: min(90%, 420px); display: flex; align-items: center; gap: 9px; padding: 9px 12px; border: 1px solid #f5d18a; border-radius: 11px; color: #854d0e; background: rgba(255, 251, 235, .96); box-shadow: 0 4px 14px rgba(80, 55, 15, .12); font-size: 11px; font-weight: 800; }
-.farm-analytics-map-banner button { color: #854d0e; border: 1px solid #f0ca78; border-radius: 7px; padding: 4px 7px; background: #fff; }
-@media (max-width: 900px) {
-  .farm-analytics-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .farm-analytics-grid { grid-template-columns: 1fr; }
-  .farm-analytics-data-row { grid-template-columns: 1fr; }
+.farm-land.farm-realistic {
+  background: transparent;
+  background-image: none;
+  border-color: transparent;
 }
-@media (max-width: 560px) {
-  .farm-analytics-view { padding: 12px; }
-  .farm-analytics-heading { flex-direction: column; }
-  .farm-analytics-sync { align-self: flex-start; }
-  .farm-analytics-kpis { gap: 8px; }
-  .farm-analytics-kpi { padding: 12px; border-radius: 12px; }
-  .farm-analytics-kpi strong { font-size: 25px; }
-  .farm-analytics-kpi small { font-size: 9px; }
-  .farm-analytics-card { border-radius: 12px; }
-  .farm-analytics-bar-row { grid-template-columns: minmax(70px, 1fr) minmax(40px, 1.25fr) 28px; gap: 7px; }
-  .farm-analytics-filters label { flex-basis: 100%; }
-  .farm-analytics-filters select { flex: 1 1 40%; min-width: 0; max-width: none; }
-  .farm-analytics-reset { flex: 1 1 auto; }
-  .farm-analytics-unavailable-grid { grid-template-columns: 1fr; }
-  .farm-analytics-table-head { align-items: flex-start; flex-direction: column; }
+.farm-realistic .farm-tree-visual,
+.farm-realistic .farm-spray-tank,
+.farm-realistic .farm-infra-layer,
+.farm-realistic .farm-tree-status-badge { display: none; }
+/* Landmark badges stay tappable but their emoji is replaced by the canvas drawing. */
+.farm-realistic .farm-landmark {
+  background: transparent;
+  border-color: transparent;
+  box-shadow: none;
 }
-
-.farm-analytics-row-health { display: grid; gap: 2px; padding: 10px 16px 8px; }
-.farm-analytics-row-health-item { display: grid; grid-template-columns: 58px minmax(50px, 1fr) minmax(90px, auto); align-items: center; gap: 9px; padding: 7px; border: 1px solid transparent; border-radius: 7px; color: #53675b; font-size: 10px; text-align: right; }
-.farm-analytics-row-health-item:hover { border-color: #d8e9dc; background: #f6fbf7; }
-.farm-analytics-row-health-track { position: relative; display: flex; height: 9px; overflow: hidden; border-radius: 999px; background: #eff3ef; }
-.farm-analytics-row-health-track i { display: block; height: 100%; background: #d97706; }
-.farm-analytics-row-health-track b { display: block; height: 100%; background: #dc2626; }
-.farm-analytics-row-health-item strong { text-align: left; color: #718076; font-size: 9px; font-weight: 700; }
-@media (max-width: 560px) { .farm-analytics-row-health-item { grid-template-columns: 48px minmax(25px, 1fr); } .farm-analytics-row-health-item strong { grid-column: 2; } }
-
-
-/* Analytics scrolls the dashboard and the original shared map as one page. */
-.farm-analytics-main { display: flex; flex-direction: column; align-items: stretch; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; }
-.farm-analytics-main .farm-analytics-view { height: auto; min-height: 0; flex: 0 0 auto; overflow: visible; }
-.farm-analytics-map-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 10px; padding: 14px clamp(14px, 2vw, 28px); border-top: 1px solid #dbe5dc; border-bottom: 1px solid #dbe5dc; background: #fff; color: #244936; }
-.farm-analytics-map-heading h3 { margin: 0; font-size: 15px; font-weight: 850; }
-.farm-analytics-map-heading p { margin: 4px 0 0; color: #68786d; font-size: 11px; }
-.farm-analytics-map-heading button { border: 1px solid #c9ddcf; border-radius: 7px; padding: 6px 10px; color: #236247; background: #f5faf6; font-size: 11px; font-weight: 800; }
-.farm-analytics-main .farm-map-canvas { position: relative; flex: 0 0 auto; min-height: 340px; }
-
-.farm-analytics-alerts-card { margin: 0 0 16px; }
-.farm-analytics-alert-count { display: inline-flex; align-items: center; justify-content: center; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 999px; background: #fff4dc; color: #9a5b0b; font-size: 12px; font-weight: 900; }
-.farm-analytics-alert-list { display: grid; padding: 0 16px 12px; }
-.farm-analytics-alert-row { display: flex; align-items: center; gap: 11px; min-width: 0; padding: 10px 5px; border-bottom: 1px solid #eef2ee; text-align: right; }
-.farm-analytics-alert-row:last-child { border-bottom: 0; }
-.farm-analytics-alert-mark { display: grid; place-items: center; flex: 0 0 30px; height: 30px; border-radius: 9px; background: #f3f5f2; color: #708078; }
-.farm-analytics-alert-mark.is-priority { background: #fff3df; color: #b36a0c; }
-.farm-analytics-alert-main { display: grid; flex: 1; min-width: 0; gap: 3px; }
-.farm-analytics-alert-main strong { color: #284b38; font-size: 12px; }
-.farm-analytics-alert-main small { color: #78867c; font-size: 10px; line-height: 1.6; }
-.farm-analytics-alert-action { color: #16724f; font-size: 10px; font-weight: 850; white-space: nowrap; }
-.farm-analytics-sort { color: inherit; font: inherit; font-weight: 800; white-space: nowrap; }
-.farm-analytics-sort:hover { color: #047857; }
+.farm-realistic .farm-landmark > span { opacity: 0; }
+.farm-realistic .farm-landmark[data-selected="true"] {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 3px rgba(4, 120, 87, 0.9);
+}
+.farm-realistic .farm-landmark[data-conflict="true"] { border-color: #f59e0b; }
+.farm-realistic .farm-axis-cell,
+.farm-realistic .farm-axis-road,
+.farm-realistic .farm-axis-drainage,
+.farm-realistic .farm-axis-gap {
+  background: rgba(30, 22, 10, 0.42);
+  color: #fff;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.7);
+}
+.farm-realistic .farm-map-cell-label {
+  color: #fff;
+  opacity: 0.92;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.9), 0 0 1px #000;
+}
+.farm-land.farm-rl-no-numbers .farm-map-cell-label { display: none; }

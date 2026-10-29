@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
   Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2, Hash,
-  WifiOff, RefreshCw, CheckCircle2, AlertCircle, LogIn, LogOut, UserRound, LockKeyhole, Eye, EyeOff, BarChart3, MapPin,
+  WifiOff, RefreshCw, CheckCircle2, AlertCircle, LogIn, LogOut, UserRound, LockKeyhole, Eye, EyeOff,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import {
@@ -24,8 +24,7 @@ import { buildCoordinateMap, parseCellId } from './farm/coordinates';
 import { InfrastructureLayer } from './farm/InfrastructureLayer';
 import { EditGridOverlay } from './farm/EditGridOverlay';
 import { TreeSymbols } from './farm/TreeGraphics';
-import { GRID, DEFAULT_GRID_GAP, MIN_GRID_GAP, MAX_GRID_GAP, applyGridGap, buildKindGrid, kindAt, type KindGrid } from './farm/infrastructure';
-import { FarmAnalytics, type AnalyticsHighlight } from './analytics/FarmAnalytics';
+import { GRID, buildKindGrid, kindAt, type KindGrid } from './farm/infrastructure';
 import {
   ORIENTATION_OPTIONS, displayOrder, flipsColumns, flipsRows, getGridOrigin, mirrorKindGrid, mirrorSlot,
   normalizeOrientation, type MapOrientation,
@@ -35,6 +34,9 @@ import {
   STATUS_GRAFTED, STATUS_NEEDS_PRUNING, STATUS_UPROOTED, TONE_COLORS, VARIETY_ACCENTS, statusLabel,
 } from './farm/treeVisuals';
 import { LandmarkLayer } from './farm/LandmarkLayer';
+import { RealisticLayer } from './farm/realistic/RealisticLayer';
+import { RealisticConfirmDialog, RealisticOverlays, RealisticToolbarButtons } from './farm/realistic/RealisticControls';
+import { useRealisticMode } from './farm/realistic/useRealisticMode';
 import {
   DeleteLandmarkConfirm, LandmarkDetailsDialog, LandmarkPalette, PlacementBar, type PlacedItem,
 } from './farm/LandmarkDialog';
@@ -184,10 +186,14 @@ const MOBILE_LAYOUT_QUERY = '(max-width: 767px), (pointer: coarse) and (max-heig
 // Vertical finger travel needed before the header reacts; prevents flicker from
 // tiny movements while panning the map.
 const HEADER_SWIPE_THRESHOLD = 28;
-// Must match --farm-header-ms in index.css; the map follows the header only while
-// its edge is actually moving. The updated easing is smooth without feeling delayed.
-const HEADER_ANIM_MS = 560;
-const HEADER_TOGGLE_COOLDOWN_MS = 240;
+// Duration of the hide/reveal slide. MUST equal --farm-header-ms in index.css
+// (the stylesheet is the single source of truth for the animation; this copy only
+// tells the map how long to keep following the header's moving edge).
+// It was 280ms; the slide is now three times slower (840ms).
+const HEADER_ANIM_MS = 840;
+// A toggle that arrives while the previous slide has barely started is ignored, so
+// a quick back-and-forth wobble cannot start overlapping slides.
+const HEADER_TOGGLE_COOLDOWN_MS = 320;
 // Standard "collapsing toolbar" convention: dragging the map content UP (like
 // scrolling down a page) hides the header; dragging it DOWN (scrolling up)
 // reveals it. Set to false to invert.
@@ -413,21 +419,14 @@ export default function App() {
   const [cellsData, setCellsData] = useState<CellsData>({});
   const [rowsCount, setRowsCount] = useState(DEFAULT_ROWS);
   const [colsCount, setColsCount] = useState(DEFAULT_COLS);
-  const [gridSpacing, setGridSpacing] = useState(DEFAULT_GRID_GAP);
   const [loading, setLoading] = useState(true);
-  const [farmReadUnavailable, setFarmReadUnavailable] = useState(false);
   const [error, setError] = useState('');
   const [syncStatus, setSyncStatus] = useState<'offline' | 'syncing' | 'synced' | 'error'>(
     isFirebaseConfigured && typeof navigator !== 'undefined' && !navigator.onLine ? 'offline' : 'syncing'
   );
 
-  // Three distinct destinations share the same farm data and original grid.
-  const [mode, setMode] = useState<'view' | 'edit' | 'analytics'>('view');
-  const [analyticsHighlight, setAnalyticsHighlight] = useState<AnalyticsHighlight | null>(null);
-  const [analyticsFilteredCellIds, setAnalyticsFilteredCellIds] = useState<Set<string> | null>(null);
-  const handleAnalyticsFilteredCells = useCallback((cellIds: string[] | null) => {
-    setAnalyticsFilteredCellIds(cellIds ? new Set(cellIds) : null);
-  }, []);
+  // أوضاع التطبيق: 'view' (لإدارة الأشجار) | 'edit' (لتخطيط المزرعة والممرات)
+  const [mode, setMode] = useState<'view' | 'edit'>('view');
 
   const [selectedTree, setSelectedTree] = useState<string | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -449,9 +448,11 @@ export default function App() {
   const [showColNumberMenu, setShowColNumberMenu] = useState(false);
 
   const [showLegend, setShowLegend] = useState(false);
+  // Realistic (drone view) mode: state machine only. Nothing heavy exists until the user confirms.
+  const realistic = useRealisticMode();
+  // Set by <RealisticLayer> while Realistic mode is on; called after every pan/zoom transform write.
+  const realisticViewListenerRef = useRef<(() => void) | null>(null);
   const farmDocumentExistsRef = useRef(false);
-  const farmDataAccessBlockedRef = useRef(false);
-  const savedGridGapRef = useRef(DEFAULT_GRID_GAP);
 
   // ---- Map orientation (mirroring). A DISPLAY choice only: logical rows, columns,
   // cell ids and landmark slots never change (see farm/orientation.ts).
@@ -493,7 +494,7 @@ export default function App() {
   );
 
   // Display coordinates are separate from the internal (stored) cell ids. The
-  // numeric row/column numbers and the full "1-012" coordinate are derived from
+  // numeric row/column numbers and the full "001-012" coordinate are derived from
   // physical position + which rows/columns are unnumbered; nothing stored changes.
   const coordMap = React.useMemo(
     () => buildCoordinateMap(rowsCount, colsCount, unlabeledRows, unlabeledCols),
@@ -600,6 +601,8 @@ export default function App() {
     const nextPos = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
     posRef.current = nextPos;
     content.style.transform = `translate3d(${nextPos.x}px, ${nextPos.y}px, 0) scale(${scaleRef.current})`;
+    // Realistic mode redraws its canvas in the same frame, so it never lags behind the cells.
+    realisticViewListenerRef.current?.();
 
     const shouldUseLowZoom = scaleRef.current < 0.55;
     if (shouldUseLowZoom !== lowZoomClassRef.current) {
@@ -639,8 +642,7 @@ export default function App() {
       lastZoomFrameTimeRef.current = time;
 
       // Frame-rate independent exponential easing: responsive without jumps.
-      const zoomingIn = targetScaleRef.current > scaleRef.current;
-      const t = 1 - Math.exp(-dt / (zoomingIn ? 105 : 90));
+      const t = 1 - Math.exp(-dt / 90);
       const scaleDelta = targetScaleRef.current - scaleRef.current;
       const xDelta = targetPosRef.current.x - posRef.current.x;
       const yDelta = targetPosRef.current.y - posRef.current.y;
@@ -713,20 +715,10 @@ export default function App() {
     writeTransform();
   }, [measureMap, stopZoomAnimation, writeTransform]);
 
-  // Analytics shows the same map in a shorter embedded viewport. Refit only when
-  // entering/leaving that destination so the existing map camera is measured
-  // against the correct viewport dimensions, not the dashboard's height.
-  const previousModeForViewportRef = useRef(mode);
-  useEffect(() => {
-    const previous = previousModeForViewportRef.current;
-    previousModeForViewportRef.current = mode;
-    if (previous === mode || (previous !== 'analytics' && mode !== 'analytics')) return;
-    const frame = requestAnimationFrame(() => {
-      measureMap();
-      resetView();
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [mode, measureMap, resetView]);
+  const getRealisticView = useCallback(
+    () => ({ scale: scaleRef.current, x: posRef.current.x, y: posRef.current.y }),
+    [],
+  );
 
   const zoomInBtn = useCallback(() => {
     const rect = containerRef.current?.getBoundingClientRect();
@@ -763,7 +755,7 @@ export default function App() {
       if (!delta) return;
 
       const point = wheelPointRef.current;
-      const factor = Math.exp(-Math.max(-240, Math.min(240, delta)) * 0.00125);
+      const factor = Math.exp(-delta * 0.0015);
       // Build on the latest requested scale so fast wheel bursts never get lost
       // while the smooth animation is still catching up.
       const baseScale = targetScaleRef.current;
@@ -890,23 +882,14 @@ export default function App() {
           setLandmarks(normalizeLandmarks(parsed.landmarks));
           setLandmarkTypes(normalizeLandmarkTypes(parsed.landmarkTypes));
           setOrientation(normalizeOrientation(parsed.mapOrientation));
-          const savedGap = applyGridGap(parsed.gridGap ?? DEFAULT_GRID_GAP);
-          savedGridGapRef.current = savedGap;
-          setGridSpacing(savedGap);
         } else {
           setCellsData({});
-          applyGridGap(DEFAULT_GRID_GAP);
-          savedGridGapRef.current = DEFAULT_GRID_GAP;
-          setGridSpacing(DEFAULT_GRID_GAP);
         }
-        setFarmReadUnavailable(false);
-        setSyncStatus('synced');
       } catch (err) {
         console.error('Failed to read local storage', err);
-        setFarmReadUnavailable(true);
-        setSyncStatus('error');
         setError('تعذر قراءة البيانات المحفوظة محلياً.');
       }
+      setSyncStatus('synced');
       setUser({ uid: 'local-user' });
       setLoading(false);
       return;
@@ -924,18 +907,11 @@ export default function App() {
       setLandmarks({});
       setLandmarkTypes({});
       setOrientation('original');
-      applyGridGap(DEFAULT_GRID_GAP);
-      savedGridGapRef.current = DEFAULT_GRID_GAP;
-      setGridSpacing(DEFAULT_GRID_GAP);
-      setAnalyticsHighlight(null);
-      setAnalyticsFilteredCellIds(null);
       setSession(null);
       setShowPalette(false);
       setSelectedLandmarkId(null);
       setConfirmDeleteLandmark(false);
       farmDocumentExistsRef.current = false;
-      farmDataAccessBlockedRef.current = !!currentUser;
-      setFarmReadUnavailable(!!currentUser);
       setUser(currentUser);
       setError('');
 
@@ -976,18 +952,11 @@ export default function App() {
             setLandmarks({});
             setLandmarkTypes({});
             setOrientation('original');
-            applyGridGap(DEFAULT_GRID_GAP);
-            savedGridGapRef.current = DEFAULT_GRID_GAP;
-            setGridSpacing(DEFAULT_GRID_GAP);
-            farmDataAccessBlockedRef.current = true;
-            setFarmReadUnavailable(true);
             setError('تعذر تحميل مزرعة هذا الحساب بأمان. تحقق من بيانات Firestore.');
             setSyncStatus('error');
             setLoading(false);
             return;
           }
-          farmDataAccessBlockedRef.current = false;
-          setFarmReadUnavailable(false);
           setCellsData(data.cells || {});
           setRowsCount(data.rowsCount || DEFAULT_ROWS);
           setColsCount(data.colsCount || DEFAULT_COLS);
@@ -999,32 +968,15 @@ export default function App() {
           setLandmarks(normalizeLandmarks(data.landmarks));
           setLandmarkTypes(normalizeLandmarkTypes(data.landmarkTypes));
           setOrientation(normalizeOrientation(data.mapOrientation));
-          const savedGap = applyGridGap(data.gridGap ?? DEFAULT_GRID_GAP);
-          savedGridGapRef.current = savedGap;
-          setGridSpacing(savedGap);
           if (!data.ownerUid && navigator.onLine) {
             // Backfill ownership metadata without changing the existing farm shape.
             setDoc(docRef, { ownerUid: user.uid }, { merge: true }).catch((err) => {
               console.error('Failed to add farm ownership metadata', err);
             });
           }
-        } else if (docSnap.metadata.fromCache) {
-          // A cache miss is NOT proof that the authenticated user's farm is absent.
-          // Wait for a server-confirmed missing document; never overwrite/initialize on a
-          // temporary offline or permission/loading condition.
-          farmDataAccessBlockedRef.current = true;
-          setFarmReadUnavailable(true);
-          if (!navigator.onLine) {
-            setError('لا توجد نسخة مزرعة متاحة في التخزين المحلي حالياً. لم يتم إنشاء مزرعة أو تعديل البيانات. اتصل بالإنترنت لإعادة المحاولة.');
-            setSyncStatus('offline');
-            setLoading(false);
-          }
-          return;
         } else {
-          // Only a server-confirmed missing document for this UID reaches this path.
-          // This preserves the existing intentional first-login initialization flow.
-          farmDataAccessBlockedRef.current = false;
-          setFarmReadUnavailable(false);
+          // A brand-new Firebase user gets a brand-new, empty farm document.
+          // This is deliberately created at the user's own UID path only.
           const emptyFarm = {
             ownerUid: user.uid,
             cells: {},
@@ -1036,7 +988,6 @@ export default function App() {
             colGapKinds: {},
             landmarks: {},
             landmarkTypes: {},
-            gridGap: DEFAULT_GRID_GAP,
           };
           setCellsData({});
           setRowsCount(DEFAULT_ROWS);
@@ -1048,17 +999,10 @@ export default function App() {
           setLandmarks({});
           setLandmarkTypes({});
           setOrientation('original');
-          applyGridGap(DEFAULT_GRID_GAP);
-          savedGridGapRef.current = DEFAULT_GRID_GAP;
-          setGridSpacing(DEFAULT_GRID_GAP);
           farmDocumentExistsRef.current = true;
-          setDoc(docRef, emptyFarm, { merge: true }).then(() => {
-            savedGridGapRef.current = DEFAULT_GRID_GAP;
-          }).catch((err) => {
+          setDoc(docRef, emptyFarm, { merge: true }).catch((err) => {
             console.error('Failed to initialize new user farm', err);
             farmDocumentExistsRef.current = false;
-            farmDataAccessBlockedRef.current = true;
-            setFarmReadUnavailable(true);
             if (navigator.onLine) {
               setError('تعذر إنشاء مزرعة هذا الحساب في Firestore.');
               setSyncStatus('error');
@@ -1077,8 +1021,6 @@ export default function App() {
       },
       (err) => {
         console.error('Firestore error:', err);
-        farmDataAccessBlockedRef.current = true;
-        setFarmReadUnavailable(true);
         if (!navigator.onLine) {
           setSyncStatus('offline');
         } else {
@@ -1126,14 +1068,7 @@ export default function App() {
     nextLandmarks = landmarks,
     nextLandmarkTypes = landmarkTypes,
     nextOrientation = orientation,
-    nextGridGap = gridSpacing,
   ) => {
-    if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user' && farmDataAccessBlockedRef.current) {
-      setError('لم يتم حفظ التغيير لأن قراءة مزرعة هذا الحساب لم تُتحقق بعد. أعد الاتصال أو تحقق من صلاحيات الوصول أولاً.');
-      return;
-    }
-    const normalizedGridGap = applyGridGap(nextGridGap);
-    setGridSpacing(normalizedGridGap);
     const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
     const cleanedUnlabeledCols = nextUnlabeledCols.filter((index) => Number.isInteger(index) && index >= 0 && index < nextCols);
     const cleanedRowGapKinds = Object.fromEntries(
@@ -1172,7 +1107,6 @@ export default function App() {
       landmarks: nextLandmarks,
       landmarkTypes: nextLandmarkTypes,
       mapOrientation: nextOrientation,
-      gridGap: normalizedGridGap,
     };
 
     if (isFirebaseConfigured && db && user && 'uid' in user && user.uid !== 'local-user') {
@@ -1183,7 +1117,6 @@ export default function App() {
           // First write creates the existing document shape without changing its path.
           await setDoc(docRef, payload, { merge: true });
           farmDocumentExistsRef.current = true;
-          savedGridGapRef.current = normalizedGridGap;
           return;
         }
 
@@ -1220,7 +1153,6 @@ export default function App() {
 
         // Display preference stored with the other layout settings (one optional field).
         if (nextOrientation !== orientation) updates.mapOrientation = nextOrientation;
-        if (normalizedGridGap !== savedGridGapRef.current) updates.gridGap = normalizedGridGap;
 
         if (nextRows !== rowsCount) updates.rowsCount = nextRows;
         if (nextCols !== colsCount) updates.colsCount = nextCols;
@@ -1231,10 +1163,8 @@ export default function App() {
 
         if (changedCells > 400) {
           await setDoc(docRef, payload, { merge: true });
-          savedGridGapRef.current = normalizedGridGap;
         } else if (Object.keys(updates).length > 0) {
           await updateDoc(docRef, updates);
-          savedGridGapRef.current = normalizedGridGap;
         }
       } catch (err) {
         console.error('Failed to save to Firestore', err);
@@ -1255,7 +1185,6 @@ export default function App() {
     } else {
       try {
         localStorage.setItem(getLocalStorageKey(user && 'uid' in user ? user.uid : null), JSON.stringify(payload));
-        savedGridGapRef.current = normalizedGridGap;
         setSyncStatus('synced');
       } catch (err) {
         console.error('Failed to save locally', err);
@@ -1263,7 +1192,7 @@ export default function App() {
         setSyncStatus('error');
       }
     }
-  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, landmarks, landmarkTypes, orientation, gridSpacing]);
+  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, landmarks, landmarkTypes, orientation]);
 
   const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
   const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
@@ -1371,7 +1300,7 @@ export default function App() {
   // ---- Landmarks -----------------------------------------------------------
   // Where cell (0,0) is DRAWN: the label strips move with the mirroring, so every
   // overlay (infrastructure, landmarks, edit grid) shares this one origin.
-  const gridOrigin = React.useMemo(() => getGridOrigin(orientation), [orientation, gridSpacing]);
+  const gridOrigin = React.useMemo(() => getGridOrigin(orientation), [orientation]);
 
   // Pixel position of a screen point in the farm's own (unscaled) grid space,
   // measured from the top-left of DISPLAYED cell (0,0) - the origin the layers use.
@@ -1750,12 +1679,6 @@ export default function App() {
                     coordinate={coordMap.describeAt(rowIndex, colIndex)}
                     editMode={mode === 'edit'}
                     selected={selectedCellId === cellId}
-                    analyticsHighlight={!!analyticsFilteredCellIds?.has(cellId) || (!!analyticsHighlight && (
-                      analyticsHighlight.kind === 'status' ? !!cellsData[cellId]?.lastUpdated && cellsData[cellId]?.status === analyticsHighlight.value :
-                      analyticsHighlight.kind === 'variety' ? !!cellsData[cellId]?.lastUpdated && (cellsData[cellId]?.variety || 'غير محدد') === analyticsHighlight.value :
-                      analyticsHighlight.kind === 'weak' ? !!cellsData[cellId]?.lastUpdated && cellsData[cellId]?.status === STATUS_NEEDS_PRUNING :
-                      !!cellsData[cellId]?.lastUpdated && (cellsData[cellId]?.status === 'مصابة بآفة/مرض' || (!!cellsData[cellId]?.disease && cellsData[cellId]?.disease !== 'لا يوجد'))
-                    ))}
                   />
                 );
               })}
@@ -1767,7 +1690,7 @@ export default function App() {
         {flipY && headerRow}
       </>
     );
-  }, [cellsData, rowLabels, rowOrder, colOrder, flipX, flipY, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId, analyticsHighlight, analyticsFilteredCellIds]);
+  }, [cellsData, rowLabels, rowOrder, colOrder, flipX, flipY, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
 
   const handleLogout = async () => {
     if (!auth) return;
@@ -1825,27 +1748,21 @@ export default function App() {
         {/* أزرار التبديل بين الأوضاع */}
         <div className="flex bg-emerald-950 p-1 rounded-xl shadow-inner border border-emerald-800">
           <button
-            onClick={() => { setMode('view'); setAnalyticsHighlight(null); setAnalyticsFilteredCellIds(null); }}
+            onClick={() => setMode('view')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${mode === 'view' ? 'bg-white text-emerald-900 shadow-md scale-105' : 'text-emerald-200 hover:text-white'}`}
           >
             <MousePointer2 size={16} /> الإدارة والبيانات
           </button>
           <button
-            onClick={() => { setMode('edit'); setAnalyticsHighlight(null); setAnalyticsFilteredCellIds(null); }}
+            onClick={() => setMode('edit')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${mode === 'edit' ? 'bg-white text-emerald-900 shadow-md scale-105' : 'text-emerald-200 hover:text-white'}`}
           >
             <LayoutGrid size={16} /> تخطيط المزرعة
           </button>
-          <button
-            onClick={() => setMode('analytics')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-bold transition-all ${mode === 'analytics' ? 'bg-white text-emerald-900 shadow-md scale-105' : 'text-emerald-200 hover:text-white'}`}
-          >
-            <BarChart3 size={16} /> تحليلات المزرعة
-          </button>
         </div>
 
         {/* دليل الألوان (يتغير حسب الوضع) */}
-        <div style={{ display: mode === 'analytics' ? 'none' : undefined }} className="hidden lg:flex items-center gap-4">
+        <div className="hidden lg:flex items-center gap-4">
           {mode === 'view' ? (
             <div className="flex gap-4 text-sm bg-emerald-800 p-2 rounded-lg border border-emerald-700">
               <div className="flex items-center gap-1"><span className="w-3 h-3 rounded-full bg-[#059669]"></span> سليمة</div>
@@ -1974,28 +1891,6 @@ export default function App() {
               </div>
             </div>
 
-            <div className="flex items-center gap-2 rounded-lg border border-amber-300 bg-white/70 px-3 py-1.5" data-testid="grid-spacing-control">
-              <label htmlFor="farm-grid-spacing" className="text-xs font-bold text-amber-900 whitespace-nowrap">المسافة بين الأشجار</label>
-              <input
-                id="farm-grid-spacing"
-                aria-label="المسافة بين الأشجار"
-                type="range"
-                min={MIN_GRID_GAP}
-                max={MAX_GRID_GAP}
-                step={2}
-                value={gridSpacing}
-                onChange={(e) => {
-                  const value = applyGridGap(Number(e.target.value));
-                  setGridSpacing(value);
-                }}
-                onPointerUp={() => persistFarmState(cellsData, rowsCount, colsCount, undefined, undefined, undefined, undefined, landmarks, landmarkTypes, orientation, gridSpacing)}
-                onKeyUp={(e) => { if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') persistFarmState(cellsData, rowsCount, colsCount, undefined, undefined, undefined, undefined, landmarks, landmarkTypes, orientation, gridSpacing); }}
-                className="w-24 accent-emerald-700"
-              />
-              <span className="min-w-7 text-center text-xs font-extrabold tabular-nums">{gridSpacing}px</span>
-              <button type="button" className="text-[10px] rounded bg-amber-100 px-2 py-1 font-bold text-amber-900" onClick={() => persistFarmState(cellsData, rowsCount, colsCount, undefined, undefined, undefined, undefined, landmarks, landmarkTypes, orientation, DEFAULT_GRID_GAP)}>عادي</button>
-            </div>
-
             {/* قائمة العناصر: أنواع العناصر + وضع أي عدد منها + العناصر الموضوعة */}
             <button
               type="button"
@@ -2117,58 +2012,12 @@ export default function App() {
         </div>
       )}
 
-      {/* Analytics is a separate destination; the existing map below is kept mounted and is reused for highlights/navigation. */}
-      <main className={`flex-1 relative ${mode === 'analytics' ? 'farm-analytics-main bg-[#f4f7f3]' : 'overflow-hidden bg-[#e4e0ce]'}`}>
-        {mode === 'analytics' && (
-          <FarmAnalytics
-            cells={cellsData}
-            rowLabels={rowLabels}
-            rowsCount={rowsCount}
-            colsCount={colsCount}
-            unnumberedRows={unlabeledRows}
-            unnumberedCols={unlabeledCols}
-            rowGapKinds={rowGapKinds}
-            colGapKinds={colGapKinds}
-            coordinateAt={coordMap.coordinateAt}
-            syncStatus={syncStatus}
-            error={error}
-            dataUnavailable={farmReadUnavailable}
-            onSelectTree={(cellId) => {
-              setAnalyticsHighlight(null);
-              setAnalyticsFilteredCellIds(null);
-              setMode('view');
-              setSelectedTree(cellId);
-              setFormData({
-                variety: cellsData[cellId]?.variety || 'غير محدد',
-                status: cellsData[cellId]?.status || 'سليمة',
-                disease: cellsData[cellId]?.disease || 'لا يوجد',
-                pruneDate: cellsData[cellId]?.pruneDate || '',
-                notes: cellsData[cellId]?.notes || '',
-              });
-              setIsModalOpen(true);
-            }}
-            onHighlight={(highlight) => {
-              setAnalyticsHighlight(highlight);
-              if (mode === 'analytics') {
-                requestAnimationFrame(() => document.getElementById('farm-analytics-map')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-              } else {
-                setMode('view');
-              }
-            }}
-            onFilteredCellsChange={handleAnalyticsFilteredCells}
-          />
-        )}
-        {mode === 'analytics' && (
-          <div id="farm-analytics-map-heading" className="farm-analytics-map-heading" dir="rtl">
-            <div><h3>الخريطة التحليلية — نفس خريطة المزرعة</h3><p>{analyticsHighlight?.label ? `التظليل المحدد: ${analyticsHighlight.label}` : analyticsFilteredCellIds ? `المواقع المطابقة للمرشحات: ${analyticsFilteredCellIds.size.toLocaleString('en-US')}` : 'غيّر المرشحات أو اختر فئة من الرسوم لتظليل المواقع المطابقة.'}</p></div>
-            <div className="flex items-center gap-2"><button type="button" onClick={resetView}>إعادة ضبط الخريطة</button>{(analyticsHighlight || analyticsFilteredCellIds) && <button type="button" onClick={() => { setAnalyticsHighlight(null); setAnalyticsFilteredCellIds(null); }}>إزالة التظليل</button>}</div>
-          </div>
-        )}
+      {/* منطقة الخريطة */}
+      <main className="flex-1 relative overflow-hidden bg-[#e4e0ce]">
 
         {/* مقبض إظهار الشريط العلوي (جوال فقط، يظهر عندما يكون الشريط مخفياً) */}
         <button
           type="button"
-          style={{ display: mode === 'analytics' ? 'none' : undefined }}
           className="farm-header-handle"
           data-visible={headerCollapsed ? 'true' : undefined}
           tabIndex={headerCollapsed ? 0 : -1}
@@ -2180,15 +2029,8 @@ export default function App() {
           </svg>
         </button>
 
-        {analyticsHighlight && mode !== 'analytics' && (
-          <div className="farm-analytics-map-banner" dir="rtl">
-            <MapPin size={15} /><span>تظليل تحليلي: {analyticsHighlight.label}</span>
-            <button type="button" onClick={() => setAnalyticsHighlight(null)}>إزالة</button>
-          </div>
-        )}
-
         {/* أزرار الزووم */}
-        <div style={{ display: mode === 'analytics' ? 'none' : undefined }} className="absolute top-4 right-4 z-10 flex flex-col gap-2 bg-white p-2 rounded-lg shadow-md border border-gray-200">
+        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 bg-white p-2 rounded-lg shadow-md border border-gray-200">
           <button onClick={zoomInBtn} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="تكبير">
             <ZoomIn size={20} />
           </button>
@@ -2200,10 +2042,13 @@ export default function App() {
           <button onClick={resetView} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="إعادة ضبط الرؤية">
             <Maximize size={20} />
           </button>
+          <RealisticToolbarButtons mode={realistic} />
         </div>
 
+        <RealisticOverlays mode={realistic} />
+
         {/* دليل الرموز: الأصناف وحالات الشجرة والبنية التحتية */}
-        <div style={{ display: mode === 'analytics' ? 'none' : undefined }} className="absolute bottom-4 right-4 z-10 flex flex-col items-start gap-2" dir="rtl">
+        <div className="absolute bottom-4 right-4 z-10 flex flex-col items-start gap-2" dir="rtl">
           {showLegend && (
             <div className="farm-legend-panel" role="dialog" aria-label="دليل الرموز">
               <div className="farm-legend-title">حالة الشجرة</div>
@@ -2258,14 +2103,38 @@ export default function App() {
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
         <div
           ref={containerRef}
-          id={mode === 'analytics' ? 'farm-analytics-map' : undefined}
-          className={`farm-map-canvas w-full h-full touch-none ${mode === 'edit' ? 'farm-map-edit' : ''}`}
-          style={{ direction: 'ltr', height: mode === 'analytics' ? 'min(60vh, 620px)' : undefined, minHeight: mode === 'analytics' ? 340 : undefined, flex: mode === 'analytics' ? '0 0 auto' : undefined }}
+          className={`farm-map-canvas w-full h-full touch-none ${mode === 'edit' ? 'farm-map-edit' : ''}`} style={{ direction: 'ltr' }}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerCancel}
         >
+          {realistic.mounted && (
+            <RealisticLayer
+              quality={realistic.quality}
+              options={realistic.options}
+              visible={realistic.active}
+              rows={rowsCount}
+              cols={colsCount}
+              rowLabels={rowLabels}
+              cells={cellsData}
+              orientation={orientation}
+              displayKindGrid={displayKindGrid}
+              kindGrid={kindGrid}
+              rowGapKinds={rowGapKinds}
+              colGapKinds={colGapKinds}
+              landmarks={landmarks}
+              gridOrigin={gridOrigin}
+              containerRef={containerRef}
+              landRef={landRef}
+              getView={getRealisticView}
+              viewListenerRef={realisticViewListenerRef}
+              onProgress={realistic.onProgress}
+              onReady={realistic.onReady}
+              onError={realistic.onError}
+              onSlow={realistic.onSlow}
+            />
+          )}
           <div
             ref={panZoomRef}
             style={{ transformOrigin: '0 0' }}
@@ -2274,7 +2143,7 @@ export default function App() {
             {/* أرضية المزرعة والشبكة */}
             <div
               ref={landRef}
-              className="farm-land"
+              className={`farm-land${realistic.active ? ' farm-realistic' : ''}${realistic.active && !realistic.options.showNumbers ? ' farm-rl-no-numbers' : ''}`}
               data-orientation={orientation}
               style={{
                 display: 'grid',
@@ -2290,7 +2159,7 @@ export default function App() {
               {/* Both are absolutely positioned, so they take no grid cell. The
                   overlay is first in DOM order so trees/cells paint above it. */}
               <TreeSymbols />
-              <InfrastructureLayer grid={displayKindGrid} origin={gridOrigin} gridGap={gridSpacing} />
+              <InfrastructureLayer grid={displayKindGrid} origin={gridOrigin} />
               {/* Edit mode: ONE dashed-cell pattern instead of an outline on every cell. */}
               {mode === 'edit' && <EditGridOverlay rows={rowsCount} cols={colsCount} origin={gridOrigin} />}
               {/* Landmarks: their own layer on the same origin. Not grid cells, so no tree is displaced. */}
@@ -2304,7 +2173,6 @@ export default function App() {
                 conflictIds={landmarkConflictIds}
                 placing={session !== null}
                 kindGrid={kindGrid}
-                gridGap={gridSpacing}
                 movingId={session?.kind === 'move' ? session.landmarkId : null}
               />
               {gridCells}
@@ -2312,6 +2180,8 @@ export default function App() {
           </div>
         </div>
       </main>
+
+      <RealisticConfirmDialog mode={realistic} />
 
 
       {/* منتقي نوع الخلية — يظهر بجانب نقطة الضغط في وضع التخطيط */}
