@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "verify": "node --experimental-strip-types scripts/verify-farm-rendering.ts && node --experimental-strip-types scripts/verify-coordinates.ts && node --experimental-strip-types scripts/verify-landmarks.ts && node --experimental-strip-types scripts/verify-orientation.ts && node --experimental-strip-types scripts/verify-landmark-types.ts && node --experimental-strip-types scripts/verify-grid-spacing.ts"
+    "verify": "node scripts/verify-farm-rendering.ts && node scripts/verify-coordinates.ts && node scripts/verify-landmarks.ts && node scripts/verify-orientation.ts && node scripts/verify-landmark-types.ts && node scripts/verify-realistic.ts"
   },
   "dependencies": {
     "firebase": "^10.13.0",
