@@ -20,6 +20,12 @@ export interface ViewMetrics {
   /** Unscaled size of the transformed content element (including its padding). */
   contentW: number;
   contentH: number;
+  /**
+   * Height at the bottom of the viewport that floating controls (the map toolbar) cover. The map is
+   * centred / fitted / panned within the free area above it, so its last row can always be brought
+   * clear of the toolbar. Omitted = 0 (the original behaviour).
+   */
+  insetBottom?: number;
 }
 
 export interface ViewState {
@@ -41,7 +47,8 @@ export interface LandBounds {
  * centred; larger content may be panned until its edge meets the viewport edge.
  */
 export function clampView(x: number, y: number, scale: number, m: ViewMetrics): { x: number; y: number } {
-  const { viewportW, viewportH, contentW, contentH } = m;
+  const { viewportW, contentW, contentH } = m;
+  const viewportH = m.viewportH - Math.min(m.insetBottom ?? 0, Math.max(0, m.viewportH - 1));
   if (!viewportW || !viewportH || !contentW || !contentH) return { x, y };
   const scaledW = contentW * scale;
   const scaledH = contentH * scale;
@@ -73,7 +80,8 @@ export interface FitOptions {
  */
 export function computeFitView(m: ViewMetrics, land: LandBounds, opts: FitOptions): ViewState {
   const margin = opts.margin ?? 16;
-  const { viewportW, viewportH } = m;
+  const { viewportW } = m;
+  const viewportH = m.viewportH - Math.min(m.insetBottom ?? 0, Math.max(0, m.viewportH - 1));
   if (!viewportW || !viewportH || !land.width || !land.height) return { scale: 1, x: 0, y: 0 };
 
   const availW = Math.max(1, viewportW - margin * 2);

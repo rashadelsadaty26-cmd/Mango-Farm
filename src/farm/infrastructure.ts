@@ -119,6 +119,8 @@ export function buildKindGrid(
   colsCount: number,
   rowGapKinds: Record<number, string>,
   colGapKinds: Record<number, string>,
+  /** Stable column keys (see gridEdit.ts). Omitted = the legacy sequence 1..colsCount. */
+  colKeys?: readonly number[],
 ): KindGrid {
   const rows = rowLabels.length;
   const codes = new Uint8Array(rows * colsCount);
@@ -129,7 +131,7 @@ export function buildKindGrid(
     const label = rowLabels[r];
     const rowGap = rowGapKinds[r];
     for (let c = 0; c < colsCount; c++) {
-      const kind = resolveInfraKind(cells[`${label}-${c + 1}`]?.type, rowGap, colGapKinds[c]);
+      const kind = resolveInfraKind(cells[`${label}-${colKeys ? colKeys[c] : c + 1}`]?.type, rowGap, colGapKinds[c]);
       const code = kind ? KIND_TO_CODE[kind] : 0;
       const i = r * colsCount + c;
       codes[i] = code;
