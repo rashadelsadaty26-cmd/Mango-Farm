@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  detectDefaultQuality, loadPrefs, savePrefs,
+  detectDefaultQuality, loadPrefs, savePrefs, supportsCanvas2D,
   type QualityName, type RealisticDisplayOptions,
 } from './quality';
 
@@ -8,16 +8,17 @@ import {
 // State machine for Realistic mode (no graphics code in here - it must stay
 // cheap because it lives in the main bundle).
 //
-//   off --click--> confirm --confirm--> loading --renderer ready--> on
-//    ^                |                    |                          |
-//    +----cancel------+----click / error---+------click / error-------+
+//   a farm opens   --default-->  loading --renderer ready--> on
+//   user picks Standard:  any phase --> off   (remembered for THIS account)
+//   user picks Realistic: off --> loading
 //
-// Nothing expensive exists while the phase is 'off' or 'confirm': the renderer
-// module is only imported by <RealisticLayer>, which is only mounted in
+// Realistic is the DEFAULT map mode. The Standard / Realistic choice is remembered
+// per account (localStorage key scoped by the account id; never Firestore). The
+// renderer module is only imported by <RealisticLayer>, which is only mounted in
 // 'loading' / 'on'. Leaving 'on' unmounts it, which disposes the renderer.
 // ============================================================================
 
-export type RealisticPhase = 'off' | 'confirm' | 'loading' | 'on';
+export type RealisticPhase = 'off' | 'loading' | 'on';
 
 export interface RealisticNotice {
   kind: 'error' | 'slow';
@@ -36,9 +37,8 @@ export interface RealisticMode {
   progress: number | null;
   notice: RealisticNotice | null;
   panelOpen: boolean;
+  /** Switch between Standard and Realistic (the choice is remembered for this account). */
   requestToggle: () => void;
-  confirm: () => void;
-  cancel: () => void;
   togglePanel: () => void;
   setOption: <K extends keyof RealisticDisplayOptions>(key: K, value: RealisticDisplayOptions[K]) => void;
   chooseQuality: (q: QualityName) => void;
@@ -53,19 +53,63 @@ export interface RealisticMode {
 export const REALISTIC_MESSAGES = {
   unsupported: 'تعذّر تشغيل الوضع الواقعي على هذا الجهاز. تم الرجوع إلى العرض العادي ولم تتأثر أي بيانات.',
   failed: 'حدث خطأ أثناء تجهيز الوضع الواقعي. تم الرجوع إلى العرض العادي ولم تتأثر أي بيانات.',
-  slow: 'الوضع الواقعي بطيء على هذا الجهاز. يمكنك التحويل إلى جودة أقل دون أي تأثير على بيانات المزرعة.',
+  slow: 'الوضع الواقعي لسه بطيء على هذا الجهاز بعد ضبط الجودة تلقائياً. ممكن تحوّل لجودة أقل أو للعرض العادي بدون أي تأثير على بيانات المزرعة.',
 } as const;
 
-export function useRealisticMode(): RealisticMode {
-  const [phase, setPhase] = useState<RealisticPhase>('off');
+// ---- per-account map-mode preference --------------------------------------
+
+export type MapModePreference = 'realistic' | 'standard';
+const MODE_KEY_PREFIX = 'mango-farm-map-mode-v1:';
+
+/** Realistic unless this account explicitly chose Standard. */
+export function loadMapMode(scopeId: string | null | undefined): MapModePreference {
+  try {
+    if (!scopeId || typeof localStorage === 'undefined') return 'realistic';
+    return localStorage.getItem(MODE_KEY_PREFIX + scopeId) === 'standard' ? 'standard' : 'realistic';
+  } catch {
+    return 'realistic';
+  }
+}
+
+export function saveMapMode(scopeId: string | null | undefined, mode: MapModePreference): void {
+  try {
+    if (scopeId && typeof localStorage !== 'undefined') localStorage.setItem(MODE_KEY_PREFIX + scopeId, mode);
+  } catch {
+    /* private mode / quota: the preference is simply not remembered */
+  }
+}
+
+/** The phase a farm opens in. Realistic needs a canvas; without one the app stays in Standard. */
+export function initialPhase(scopeId: string | null | undefined): RealisticPhase {
+  return loadMapMode(scopeId) === 'realistic' && supportsCanvas2D() ? 'loading' : 'off';
+}
+
+/**
+ * @param scopeId the signed-in account (or local user) the preference belongs to.
+ *                Changing it (another account) re-applies THAT account's choice.
+ */
+export function useRealisticMode(scopeId: string | null | undefined): RealisticMode {
+  const [phase, setPhase] = useState<RealisticPhase>(() => initialPhase(scopeId));
   const [quality, setQuality] = useState<QualityName>(() => loadPrefs().quality ?? detectDefaultQuality());
   const pinnedQuality = useRef<boolean>(loadPrefs().quality !== null);
   const [options, setOptions] = useState<RealisticDisplayOptions>(() => loadPrefs().options);
-  const [progress, setProgress] = useState<number | null>(null);
+  const [progress, setProgress] = useState<number | null>(() => (initialPhase(scopeId) === 'loading' ? 0 : null));
   const [notice, setNotice] = useState<RealisticNotice | null>(null);
   const [panelOpen, setPanelOpen] = useState(false);
 
-  // Only DISPLAY preferences are remembered (this device). Whether the mode is on is never stored.
+  // A different account signed in: open the farm the way THAT account last left it.
+  const scopeRef = useRef(scopeId);
+  useEffect(() => {
+    if (scopeRef.current === scopeId) return;
+    scopeRef.current = scopeId;
+    const next = initialPhase(scopeId);
+    setPhase(next);
+    setProgress(next === 'loading' ? 0 : null);
+    setPanelOpen(false);
+    setNotice(null);
+  }, [scopeId]);
+
+  // Only DISPLAY preferences are remembered (this device).
   useEffect(() => {
     savePrefs({ quality: pinnedQuality.current ? quality : null, options });
   }, [quality, options]);
@@ -83,28 +127,32 @@ export function useRealisticMode(): RealisticMode {
     setPanelOpen(false);
   }, []);
 
-  const phaseRef = useRef<RealisticPhase>('off');
+  const phaseRef = useRef<RealisticPhase>(phase);
   phaseRef.current = phase;
 
-  // Off -> ask first. Already loading / on -> straight back to Standard Mode, no second dialog.
   const requestToggle = useCallback(() => {
-    if (phaseRef.current === 'off') setPhase('confirm');
-    else turnOff();
+    if (phaseRef.current === 'off') {
+      if (!supportsCanvas2D()) {
+        setNotice({ kind: 'error', text: REALISTIC_MESSAGES.unsupported });
+        return;
+      }
+      saveMapMode(scopeRef.current, 'realistic');
+      setNotice(null);
+      setProgress(0);
+      setPhase('loading');
+    } else {
+      saveMapMode(scopeRef.current, 'standard');
+      turnOff();
+    }
   }, [turnOff]);
-
-  const confirm = useCallback(() => {
-    setNotice(null);
-    setProgress(0);
-    setPhase('loading');
-  }, []);
-
-  const cancel = useCallback(() => setPhase('off'), []);
 
   const onReady = useCallback(() => {
     setProgress(null);
     setPhase((p) => (p === 'loading' ? 'on' : p));
   }, []);
 
+  // A renderer failure returns to Standard for this session but does NOT overwrite the
+  // account's preference: the next opening simply tries Realistic again.
   const onError = useCallback((message: string) => {
     turnOff();
     setNotice({ kind: 'error', text: message });
@@ -128,8 +176,6 @@ export function useRealisticMode(): RealisticMode {
     notice,
     panelOpen,
     requestToggle,
-    confirm,
-    cancel,
     togglePanel: () => setPanelOpen((v) => !v),
     setOption: (key, value) => setOptions((o) => ({ ...o, [key]: value })),
     chooseQuality,

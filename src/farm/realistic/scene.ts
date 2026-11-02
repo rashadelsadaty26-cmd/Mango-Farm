@@ -112,6 +112,8 @@ export interface SceneInput {
   rows: number;
   cols: number;
   rowLabels: string[];
+  /** Stable column keys (cell id = `<rowLabel>-<colKey>`). Omitted = legacy 1..cols. */
+  colKeys?: readonly number[];
   cells: Record<string, CellRecord | undefined>;
   orientation: MapOrientation;
   /** Mirrored kind grid (what the standard infrastructure layer draws). */
@@ -141,7 +143,7 @@ export function buildScene(input: SceneInput): FarmScene {
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      const id = `${rowLabels[r]}-${c + 1}`;
+      const id = `${rowLabels[r]}-${input.colKeys ? input.colKeys[c] : c + 1}`;
       const d = displayCell(r, c, rows, cols, orientation);
       const i = d.row * cols + d.col;
       ids[i] = id;

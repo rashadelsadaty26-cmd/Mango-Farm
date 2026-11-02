@@ -17,9 +17,24 @@
 //   * The canvas ignores pointer events. Taps still hit the real DOM cells and
 //     landmark badges, so selection, details, editing and mirroring are unchanged.
 //
-// WHEN IT DRAWS: only when the view or the data changed (no animation loop, no
-// timers). Per frame it visits only the trees inside the viewport (the display
-// lattice is the spatial index) and picks a level of detail from the zoom.
+// WHEN IT DRAWS: only when the view or the data changed (no animation loop). Per
+// frame it visits only the trees inside the viewport (the display lattice is the
+// spatial index) and picks a level of detail from the zoom.
+//
+// PERFORMANCE (measured causes, not guesses)
+//   * The ground outside the farm used to be three full-viewport pattern fills + a
+//     big image per frame. It is now terrain.ts: a tiered chunk cache, so a pan or
+//     zoom frame is a handful of drawImage calls; generation never runs mid-gesture.
+//   * Every tree used save / translate / rotate / restore. It is now ONE setTransform.
+//   * While a gesture is moving (setInteracting) the expensive extras are skipped
+//     (tree basins, leaf detail, ground shadows when far out, equipment labels,
+//     decorative road / canal layers, high-quality smoothing) and everything is
+//     drawn again at full quality as soon as the gesture settles.
+//   * Zoomed far out (< 0.25) the roads, canals, trees and status marks are baked
+//     ONCE into a small offscreen bitmap, so showing the whole farm is one blit
+//     instead of ~1,800 sprites + the road strokes.
+//   * If gesture frames stay slow, the backing-store resolution is stepped down
+//     (never below 60 %) the next time the map settles - no blank frame, no delays.
 // ============================================================================
 
 import {
@@ -34,6 +49,7 @@ import {
 } from './scene.ts';
 import { drawLandmarkShape, drawSprayBasin } from './objects.ts';
 import { makeRng, type Cnv, type Ctx, type RealisticAssets } from './textures.ts';
+import { TerrainCache } from './terrain.ts';
 
 export interface ViewState { scale: number; x: number; y: number }
 
@@ -55,6 +71,8 @@ export interface RendererInit {
   getView: () => ViewState;
   /** Path2D constructor (injectable for Node-based tests). */
   Path2DCtor?: typeof Path2D;
+  /** Creates offscreen canvases for terrain chunks / the far-zoom bitmap. Omitted (no DOM) = those features are off. */
+  canvasFactory?: (width: number, height: number) => Cnv;
   /** Called once when drawing is persistently slow on the high profile. */
   onSlow?: () => void;
   /** Called when drawing fails repeatedly; the host should fall back to the standard map. */
@@ -70,6 +88,8 @@ const DARK = '#111111';
 const CANOPY_D = GRID.cellW * 0.94;
 /** Sprites keep a margin around the crown (for the lobes' edge), so they are drawn a bit larger. */
 const SPRITE_SCALE = 1.14;
+/** Below this zoom the whole farm is drawn from the baked bitmap. */
+const FAR_ZOOM = 0.25;
 
 // The cell gap is user-adjustable (GRID.gap is mutable), so pitch and stroke scale are read live.
 const pitchX = () => GRID.cellW + GRID.gap;
@@ -147,6 +167,15 @@ export class RealisticRenderer {
   private failures = 0;
   private slowStreak = 0;
   private slowReported = false;
+
+  private factory?: (width: number, height: number) => Cnv;
+  private terrain: TerrainCache | null = null;
+  private interacting = false;
+  private resScale = 1;
+  private pendingResScale = 1;
+  private rawDpr = 1;
+  private frameRequest: number | null = null;
+  private farmCache: { canvas: Cnv; scene: FarmScene; sig: string; w: number; h: number; x: number; y: number } | null = null;
   /** Exposed for diagnostics / tests. */
   public stats = { draws: 0, lastMs: 0, treesDrawn: 0 };
 
@@ -158,14 +187,54 @@ export class RealisticRenderer {
     this.P2D = init.Path2DCtor ?? (globalThis as { Path2D: typeof Path2D }).Path2D;
     this.onSlow = init.onSlow;
     this.onFatal = init.onFatal;
+    this.factory = init.canvasFactory ?? (typeof document !== 'undefined'
+      ? (w: number, h: number) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+      : undefined);
+    this.makeTerrain();
+  }
+
+  private makeTerrain() {
+    this.terrain?.dispose();
+    this.terrain = null;
+    if (!this.factory) return;
+    const q = this.assets.quality;
+    this.terrain = new TerrainCache(this.factory, { res: q.terrainRes, budget: q.terrainBudget, detail: q.terrainDetail }, () => this.scheduleDraw());
+    this.terrain.setPaused(!this.visible);
+    const { landX, landY, landW, landH } = this.geom;
+    if (landW > 0) this.terrain.setLand({ x: landX, y: landY, w: landW, h: landH });
+  }
+
+  /** One-shot redraw on the next frame (used when background work finishes). Not a loop. */
+  private scheduleDraw() {
+    if (this.disposed || this.frameRequest !== null || typeof requestAnimationFrame === 'undefined') return;
+    this.frameRequest = requestAnimationFrame(() => { this.frameRequest = null; this.dirty = true; this.draw(); });
+  }
+
+  /** True while a pan / zoom gesture is moving (App.tsx). Cheap detail now, full detail when it settles. */
+  setInteracting(active: boolean) {
+    if (this.disposed || this.interacting === active) return;
+    this.interacting = active;
+    this.terrain?.setInteracting(active);
+    if (!active) {
+      if (this.pendingResScale !== this.resScale) {
+        this.resScale = this.pendingResScale;
+        this.resize(this.cssW, this.cssH, this.rawDpr); // before the redraw, so no blank frame is shown
+      }
+      this.dirty = true;
+      this.draw();
+    }
   }
 
   // ------------------------------------------------------------------ inputs
 
   setScene(scene: FarmScene) { this.scene = scene; this.dirty = true; }
-  setGeometry(geom: Geometry) { this.geom = geom; this.dirty = true; }
+  setGeometry(geom: Geometry) {
+    this.geom = geom;
+    this.dirty = true;
+    this.terrain?.setLand(geom.landW > 0 ? { x: geom.landX, y: geom.landY, w: geom.landW, h: geom.landH } : null);
+  }
   setOptions(opts: RealisticDisplayOptions) { this.opts = opts; this.dirty = true; }
-  setVisible(visible: boolean) { this.visible = visible; this.dirty = true; if (visible) this.draw(); }
+  setVisible(visible: boolean) { this.visible = visible; this.dirty = true; this.terrain?.setPaused(!visible); if (visible) this.draw(); }
 
   /** Replaces the texture set (quality change) and releases the previous one. */
   swapAssets(next: RealisticAssets) {
@@ -174,15 +243,25 @@ export class RealisticRenderer {
     this.patterns = {};
     this.slowStreak = 0;
     this.slowReported = false;
+    this.resScale = 1;
+    this.pendingResScale = 1;
+    this.releaseFarmCache();
+    this.makeTerrain();
     this.dirty = true;
     old.dispose();
+  }
+
+  private releaseFarmCache() {
+    if (this.farmCache) { try { this.farmCache.canvas.width = 0; this.farmCache.canvas.height = 0; } catch { /* ignore */ } }
+    this.farmCache = null;
   }
 
   /** Backing-store size follows the container; device pixel ratio is capped by the quality profile. */
   resize(cssW: number, cssH: number, devicePixelRatio = 1) {
     if (this.disposed) return;
     const q = this.assets.quality;
-    let dpr = Math.min(devicePixelRatio || 1, q.dprCap);
+    this.rawDpr = devicePixelRatio || 1;
+    let dpr = Math.min(this.rawDpr, q.dprCap) * this.resScale;
     const pixels = cssW * cssH * dpr * dpr;
     if (pixels > q.maxPixels) dpr *= Math.sqrt(q.maxPixels / pixels);
     dpr = Math.max(0.5, dpr);
@@ -209,6 +288,11 @@ export class RealisticRenderer {
     this.scene = null;
     this.infraPaths = null;
     this.patterns = {};
+    if (this.frameRequest !== null && typeof cancelAnimationFrame !== 'undefined') cancelAnimationFrame(this.frameRequest);
+    this.frameRequest = null;
+    this.terrain?.dispose();
+    this.terrain = null;
+    this.releaseFarmCache();
     this.assets.dispose();
     try { this.canvas.width = 0; this.canvas.height = 0; } catch { /* ignore */ }
   }
@@ -237,10 +321,22 @@ export class RealisticRenderer {
     this.watchSpeed(ms);
   }
 
+  /**
+   * Only gesture frames count: a slow full-quality redraw after the map settled is harmless.
+   * Persistent slow gesture frames lower the backing-store resolution (applied when the map settles).
+   */
   private watchSpeed(ms: number) {
-    if (this.assets.quality.name !== 'high' || this.slowReported) return;
-    this.slowStreak = ms > 34 ? this.slowStreak + 1 : Math.max(0, this.slowStreak - 2);
-    if (this.slowStreak >= 24) { this.slowReported = true; this.onSlow?.(); }
+    if (!this.interacting) return;
+    const budget = this.assets.quality.name === 'high' ? 30 : 26;
+    this.slowStreak = ms > budget ? this.slowStreak + 1 : Math.max(0, this.slowStreak - 2);
+    if (this.slowStreak < 10) return;
+    this.slowStreak = 0;
+    if (this.pendingResScale > 0.61) {
+      this.pendingResScale = Math.max(0.6, Math.round(this.pendingResScale * 0.82 * 100) / 100);
+    } else if (!this.slowReported && this.assets.quality.name !== 'low') {
+      this.slowReported = true;
+      this.onSlow?.();
+    }
   }
 
   private pattern(kind: 'soil' | 'road' | 'water' | 'concrete'): CanvasPattern | string {
@@ -286,7 +382,7 @@ export class RealisticRenderer {
     ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
     ctx.setTransform(dpr * s, 0, 0, dpr * s, dpr * v.x, dpr * v.y);
     ctx.imageSmoothingEnabled = true;
-    (ctx as unknown as { imageSmoothingQuality: string }).imageSmoothingQuality = s < 0.5 ? 'medium' : 'high';
+    (ctx as unknown as { imageSmoothingQuality: string }).imageSmoothingQuality = this.interacting ? 'low' : s < 0.5 ? 'medium' : 'high';
 
     // Visible rectangle in content space.
     const vx0 = -v.x / s;
@@ -303,9 +399,52 @@ export class RealisticRenderer {
     const gx1 = vx1 - this.geom.gridX;
     const gy1 = vy1 - this.geom.gridY;
 
-    this.paintInfrastructure(ctx, scene, s);
-    this.paintTrees(ctx, scene, s, gx0, gy0, gx1, gy1);
+    // The single base matrix of grid space: trees are drawn with ONE setTransform each (no save / rotate / restore).
+    const base = { a: dpr * s, e: dpr * (v.x + s * this.geom.gridX), f: dpr * (v.y + s * this.geom.gridY) };
+    if (s < FAR_ZOOM && this.drawFarmCache(ctx, scene)) {
+      // Whole-farm view: roads, canals, trees and status marks come from one baked bitmap.
+    } else {
+      this.paintInfrastructure(ctx, scene, s);
+      this.paintTrees(ctx, scene, s, gx0, gy0, gx1, gy1, this.dpr, base);
+    }
     this.paintLandmarks(ctx, scene, s, gx0, gy0, gx1, gy1);
+  }
+
+  // ------------------------------------------------- far-zoom baked bitmap
+
+  /**
+   * Bakes infrastructure + trees + status marks (all in grid space) into a small offscreen canvas and
+   * draws it. Rebuilt only when the scene / options / spacing / textures change, never per frame.
+   * Returns false when no offscreen canvas can be made (the normal path is used instead).
+   */
+  private drawFarmCache(ctx: Ctx, scene: FarmScene): boolean {
+    if (!this.factory) return false;
+    const gridW = scene.cols * pitchX() - GRID.gap;
+    const gridH = scene.rows * pitchY() - GRID.gap;
+    const M = 70; // room for road / canal strokes and status rings beyond the outer cells
+    const maxPx = this.assets.quality.name === 'high' ? 2200 : 1500;
+    const ps = Math.min(0.3, maxPx / (Math.max(gridW, gridH) + M * 2));
+    const sig = [GRID.gap, this.opts.showStatus ? 1 : 0, this.opts.showIrrigation ? 1 : 0, scene.infra.signature, ps.toFixed(4), this.assets.quality.name].join('|');
+    const c = this.farmCache;
+    if (!c || c.scene !== scene || c.sig !== sig) {
+      this.releaseFarmCache();
+      const w = Math.max(1, Math.ceil((gridW + M * 2) * ps));
+      const h = Math.max(1, Math.ceil((gridH + M * 2) * ps));
+      const canvas = this.factory(w, h);
+      const cctx = canvas.getContext('2d') as Ctx;
+      if (!cctx) return false;
+      cctx.setTransform(ps, 0, 0, ps, M * ps, M * ps); // grid space
+      cctx.imageSmoothingEnabled = true;
+      const bakeScale = 0.2; // the zoom the far-out styling is designed for
+      const keep = this.stats.treesDrawn;
+      this.paintInfrastructure(cctx, scene, bakeScale);
+      this.paintTrees(cctx, scene, bakeScale, -M, -M, gridW + M, gridH + M, 1, { a: ps, e: M * ps, f: M * ps });
+      this.stats.treesDrawn = keep;
+      this.farmCache = { canvas, scene, sig, w, h, x: -M, y: -M };
+    }
+    const fc = this.farmCache as NonNullable<typeof this.farmCache>;
+    ctx.drawImage(fc.canvas, fc.x, fc.y, gridW + M * 2, gridH + M * 2);
+    return true;
   }
 
   // ------------------------------------------------------------------ ground
@@ -315,55 +454,48 @@ export class RealisticRenderer {
     const h = vy1 - vy0;
     const { landX, landY, landW, landH } = this.geom;
 
-    // Open ground everywhere (also outside the farm): sand, in two scales so the tile never reads as a pattern.
-    ctx.fillStyle = this.pattern('soil');
-    ctx.fillRect(vx0, vy0, w, h);
-    ctx.save();
-    ctx.scale(1.37, 1.37);
-    ctx.globalAlpha = 0.32;
-    ctx.fillRect(vx0 / 1.37, vy0 / 1.37, w / 1.37, h / 1.37);
-    ctx.restore();
-    if (s >= 0.7) {
-      ctx.save();
-      ctx.scale(0.43, 0.43);
-      ctx.globalAlpha = 0.26;
-      ctx.fillRect(vx0 / 0.43, vy0 / 0.43, w / 0.43, h / 0.43);
-      ctx.restore();
+    if (this.terrain) {
+      // Sandy landscape around the farm: tiered, cached chunks (terrain.ts).
+      this.terrain.paint(ctx, vx0, vy0, vx1, vy1, s * this.dpr);
+      // The farm's own worked soil, over the land rectangle only.
+      this.soilFill(ctx, landX, landY, landW, landH, s);
+    } else {
+      // No offscreen canvases (no DOM): the original tiled sand everywhere.
+      this.soilFill(ctx, vx0, vy0, w, h, s);
     }
-
-    // Uncultivated land outside the farm is a little drier / paler than the worked soil.
-    ctx.fillStyle = 'rgba(236,224,190,0.22)';
-    ctx.fillRect(vx0, vy0, w, h);
 
     // Worked, slightly darker soil inside the farm.
     ctx.fillStyle = 'rgba(112,84,46,0.20)';
     ctx.fillRect(landX, landY, landW, landH);
 
     // Large-scale tint: damper / drier patches and a little weed growth, stretched over the land.
-    // Stretched well beyond the land so its edge is never in view, even fully zoomed out.
     const reach = 2600;
+    ctx.save();
+    if (this.terrain) { ctx.beginPath(); ctx.rect(landX, landY, landW, landH); ctx.clip(); }
     ctx.globalAlpha = 0.42;
     ctx.drawImage(this.assets.macro, landX - reach, landY - reach, landW + reach * 2, landH + reach * 2);
-    ctx.globalAlpha = 1;
-
-    // Boundary: a low earth bank with fence posts around the land.
-    const inset = 2;
-    ctx.save();
-    ctx.lineJoin = 'round';
-    ctx.strokeStyle = 'rgba(96,74,44,0.55)';
-    ctx.lineWidth = 7;
-    ctx.strokeRect(landX + inset, landY + inset, landW - inset * 2, landH - inset * 2);
-    ctx.strokeStyle = 'rgba(222,206,168,0.55)';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(landX + inset - 1, landY + inset - 1, landW - inset * 2, landH - inset * 2);
-    if (s >= 0.3) {
-      ctx.strokeStyle = 'rgba(70,54,32,0.9)';
-      ctx.lineWidth = 6;
-      ctx.lineCap = 'round';
-      ctx.setLineDash([0.1, 46]);
-      ctx.strokeRect(landX + inset, landY + inset, landW - inset * 2, landH - inset * 2);
-    }
     ctx.restore();
+    // (The boundary fence is a real map element - FarmFence in the DOM - so it is identical in both modes.)
+  }
+
+  /** The tiled soil in two (three when close) scales so it never reads as a pattern, plus the pale tint. */
+  private soilFill(ctx: Ctx, x: number, y: number, w: number, h: number, s: number) {
+    ctx.fillStyle = this.pattern('soil');
+    ctx.fillRect(x, y, w, h);
+    ctx.save();
+    ctx.scale(1.37, 1.37);
+    ctx.globalAlpha = 0.32;
+    ctx.fillRect(x / 1.37, y / 1.37, w / 1.37, h / 1.37);
+    ctx.restore();
+    if (s >= 0.7 && !this.interacting) {
+      ctx.save();
+      ctx.scale(0.43, 0.43);
+      ctx.globalAlpha = 0.26;
+      ctx.fillRect(x / 0.43, y / 0.43, w / 0.43, h / 0.43);
+      ctx.restore();
+    }
+    ctx.fillStyle = 'rgba(236,224,190,0.22)';
+    ctx.fillRect(x, y, w, h);
   }
 
   // ---------------------------------------------------------- infrastructure
@@ -371,7 +503,7 @@ export class RealisticRenderer {
   private strokeLayers(ctx: Ctx, paths: KindPaths, inner: KindPaths | null, layers: Layer[], cap: CanvasLineCap, s: number) {
     ctx.lineJoin = 'round';
     for (const layer of layers) {
-      if (layer.detail && s < 0.35) continue;
+      if (layer.detail && (s < 0.35 || this.interacting)) continue;
       const p = layer.inner && inner ? inner : paths;
       if (!p.chains && !p.blocks) continue;
       const style = layer.style.startsWith('pat:') ? this.pattern(layer.style.slice(4) as 'road' | 'water' | 'concrete') : layer.style;
@@ -410,7 +542,10 @@ export class RealisticRenderer {
 
   // ------------------------------------------------------------------- trees
 
-  private paintTrees(ctx: Ctx, scene: FarmScene, s: number, gx0: number, gy0: number, gx1: number, gy1: number) {
+  private paintTrees(
+    ctx: Ctx, scene: FarmScene, s: number, gx0: number, gy0: number, gx1: number, gy1: number,
+    dpr: number, base: { a: number; e: number; f: number },
+  ) {
     const { rows, cols, cls, flags, accent, seed } = scene;
     // Visible block of the display lattice: O(visible cells), never O(all cells).
     const margin = CANOPY_D;
@@ -423,8 +558,10 @@ export class RealisticRenderer {
     const canopies = this.assets.canopies;
     const nVar = canopies.length;
     const detail = this.assets.quality.closeDetail;
-    const showBasins = detail && s >= 0.45;
-    const wantLeafDetail = detail && s >= 1.5;
+    // Gesture frames skip what is expensive and barely visible while moving; the settled redraw adds it back.
+    const showBasins = detail && s >= 0.45 && !this.interacting;
+    const wantLeafDetail = detail && s >= 1.5 && !this.interacting;
+    const showShadows = s >= 0.2 && !(this.interacting && s < 0.5);
     const status = this.opts.showStatus;
     let drawn = 0;
 
@@ -443,7 +580,7 @@ export class RealisticRenderer {
       }
       ctx.globalAlpha = 1;
     }
-    for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+    if (showShadows) for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
       const i = r * cols + c;
       const k = cls[i];
       if (k !== CELL_TREE && k !== CELL_EMPTY) continue;
@@ -456,11 +593,17 @@ export class RealisticRenderer {
     }
 
     // Pass 2: canopies (+ stumps for uprooted trees).
+    let rotated = false;
     for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
       const i = r * cols + c;
       const k = cls[i];
       const x = c * pitchX() + halfW;
       const y = r * pitchY() + halfH;
+      if (rotated && (k === CELL_BASIN || (k === CELL_TREE || k === CELL_EMPTY) && (flags[i] & FLAG_UPROOTED))) {
+        // Basins and stumps are drawn in plain grid space: undo the previous tree's rotated transform first.
+        ctx.setTransform(base.a, 0, 0, base.a, base.e, base.f);
+        rotated = false;
+      }
       if (k === CELL_BASIN) {
         ctx.save();
         ctx.translate(x, y);
@@ -476,22 +619,24 @@ export class RealisticRenderer {
       const jitter = 0.93 + ((seed[i] >>> 4) % 100) / 700;
       const d = CANOPY_D * SPRITE_SCALE * sizeOf(f, k) * jitter;
       const variant = canopies[seed[i] % nVar];
-      const needed = d * s * this.dpr;
+      const needed = d * s * dpr;
       const level = needed <= variant.size / 4 ? 2 : needed <= variant.size / 2 ? 1 : 0;
       const sprite = variant.mips[level];
       if (s >= 0.3) {
         // A small stable turn (+-10 deg) so neighbouring crowns of one variant differ.
+        // One setTransform per tree (rotation about its centre) instead of save / translate / rotate / restore.
         const rot = (((seed[i] >>> 12) % 1000) / 1000 - 0.5) * 0.35;
-        ctx.save();
-        ctx.translate(x, y);
-        ctx.rotate(rot);
+        const ca = Math.cos(rot) * base.a; const sa = Math.sin(rot) * base.a;
+        ctx.setTransform(ca, sa, -sa, ca, base.e + base.a * x, base.f + base.a * y);
         ctx.drawImage(sprite, -d / 2, -d / 2, d, d);
-        ctx.restore();
+        rotated = true;
       } else {
         ctx.drawImage(sprite, x - d / 2, y - d / 2, d, d);
       }
       drawn++;
     }
+
+    if (rotated) ctx.setTransform(base.a, 0, 0, base.a, base.e, base.f);
 
     // Pass 3 (very close zoom only): vector leaves over the sprite so foliage stays crisp.
     if (wantLeafDetail) {
@@ -682,10 +827,10 @@ export class RealisticRenderer {
       ctx.scale(k, k);
       drawLandmarkShape(ctx, lm.shape);
       ctx.restore();
-      if (this.opts.showEquipmentLabels && s >= 0.6) labels.push({ text: lm.name, x: lm.x, y: lm.y + 16 * k });
+      if (this.opts.showEquipmentLabels && s >= 0.6 && !this.interacting) labels.push({ text: lm.name, x: lm.x, y: lm.y + 16 * k });
     }
 
-    if (this.opts.showEquipmentLabels && s >= 0.6) {
+    if (this.opts.showEquipmentLabels && s >= 0.6 && !this.interacting) {
       // Basin labels: only when it is close enough to read, to keep the orchard uncluttered.
       if (s >= 0.7) {
         const { rows, cols, cls } = scene;

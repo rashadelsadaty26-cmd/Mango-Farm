@@ -6,7 +6,7 @@
 // import() - AFTER the user confirms the mode.
 // ============================================================================
 
-export type QualityName = 'high' | 'low';
+export type QualityName = 'high' | 'mobile' | 'low';
 
 export interface QualityProfile {
   name: QualityName;
@@ -26,16 +26,31 @@ export interface QualityProfile {
   maxPixels: number;
   /** Vector leaf detail on very close zoom + tree basins. */
   closeDetail: boolean;
+  /** Highest terrain resolution (canvas px per map unit) generated for the ground outside the fence. */
+  terrainRes: number;
+  /** Total terrain-cache size in canvas pixels (the cache is an LRU, it never grows past this). */
+  terrainBudget: number;
+  /** 0..1: density of the small exterior details (shrubs, stones, grass). */
+  terrainDetail: number;
 }
 
 export const QUALITY_PROFILES: Record<QualityName, QualityProfile> = {
   high: {
     name: 'high', soilTile: 512, detailTile: 256, canopySize: 192, canopyVariants: 12,
     leavesPerCanopy: 420, dprCap: 2, maxPixels: 4_200_000, closeDetail: true,
+    terrainRes: 1, terrainBudget: 14_000_000, terrainDetail: 1,
+  },
+  // Phones (iPhone in particular): the SAME tree artwork at a smaller sprite size, a lower
+  // pixel-ratio cap, and a cheaper ground. Not a "broken" low-end look.
+  mobile: {
+    name: 'mobile', soilTile: 256, detailTile: 128, canopySize: 144, canopyVariants: 10,
+    leavesPerCanopy: 300, dprCap: 1.5, maxPixels: 2_300_000, closeDetail: true,
+    terrainRes: 0.55, terrainBudget: 5_000_000, terrainDetail: 0.7,
   },
   low: {
     name: 'low', soilTile: 256, detailTile: 128, canopySize: 96, canopyVariants: 6,
     leavesPerCanopy: 150, dprCap: 1, maxPixels: 1_600_000, closeDetail: false,
+    terrainRes: 0.35, terrainBudget: 2_500_000, terrainDetail: 0.4,
   },
 };
 
@@ -76,7 +91,7 @@ export function loadPrefs(): RealisticPrefs {
     const o: Partial<RealisticDisplayOptions> = parsed.options ?? {};
     const bool = (v: unknown, d: boolean) => (typeof v === 'boolean' ? v : d);
     return {
-      quality: parsed.quality === 'high' || parsed.quality === 'low' ? parsed.quality : null,
+      quality: parsed.quality === 'high' || parsed.quality === 'mobile' || parsed.quality === 'low' ? parsed.quality : null,
       options: {
         showStatus: bool(o.showStatus, DEFAULT_DISPLAY_OPTIONS.showStatus),
         showNumbers: bool(o.showNumbers, DEFAULT_DISPLAY_OPTIONS.showNumbers),
@@ -97,16 +112,39 @@ export function savePrefs(prefs: RealisticPrefs): void {
   }
 }
 
+export interface DeviceClass {
+  /** A phone or tablet (touch-first device), judged from capabilities - never from screen width alone. */
+  mobile: boolean;
+  ios: boolean;
+  /** Low-end hint from the reported memory / core count. */
+  weak: boolean;
+}
+
+/** What kind of device is this? Capability based: pointer type, touch points, platform, memory, cores. */
+export function detectDeviceClass(): DeviceClass {
+  try {
+    const nav = navigator as Navigator & { deviceMemory?: number; userAgentData?: { mobile?: boolean } };
+    const ua = nav.userAgent || '';
+    const iPhoneLike = /iPhone|iPod/.test(ua);
+    // iPadOS reports a desktop Mac UA but has touch points.
+    const iPadOS = nav.platform === 'MacIntel' && (nav.maxTouchPoints ?? 0) > 1;
+    const ios = iPhoneLike || iPadOS || /iPad/.test(ua);
+    const androidMobile = /Android/.test(ua) && /Mobile|Tablet|SM-|Pixel/.test(ua);
+    const coarse = typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches && !matchMedia('(hover: hover)').matches;
+    const uaMobile = nav.userAgentData?.mobile === true;
+    const weak = (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 2)
+      || (typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency <= 2);
+    return { mobile: ios || androidMobile || uaMobile || coarse, ios, weak };
+  } catch {
+    return { mobile: false, ios: false, weak: false };
+  }
+}
+
 /** Default quality from what the device reports. Users can always switch. */
 export function detectDefaultQuality(): QualityName {
-  try {
-    const nav = navigator as Navigator & { deviceMemory?: number };
-    if (typeof nav.deviceMemory === 'number' && nav.deviceMemory <= 2) return 'low';
-    if (typeof nav.hardwareConcurrency === 'number' && nav.hardwareConcurrency <= 2) return 'low';
-  } catch {
-    /* non-browser */
-  }
-  return 'high';
+  const d = detectDeviceClass();
+  if (d.weak) return 'low';
+  return d.mobile ? 'mobile' : 'high';
 }
 
 /** True when a 2D canvas can be created at all (the only hard requirement). */

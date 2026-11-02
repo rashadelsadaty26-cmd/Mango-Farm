@@ -32,6 +32,7 @@ export interface RealisticLayerProps {
   rows: number;
   cols: number;
   rowLabels: string[];
+  colKeys?: readonly number[];
   cells: Record<string, any>;
   orientation: MapOrientation;
   displayKindGrid: KindGrid;
@@ -46,6 +47,8 @@ export interface RealisticLayerProps {
   getView: () => ViewState;
   /** App.tsx calls this after every pan/zoom transform write. */
   viewListenerRef: React.MutableRefObject<(() => void) | null>;
+  /** App.tsx calls this with true while a pan / zoom gesture is moving and false ~160 ms after it settles. */
+  interactionRef: React.MutableRefObject<((active: boolean) => void) | null>;
   onProgress: (fraction: number) => void;
   onReady: () => void;
   onError: (message: string) => void;
@@ -91,13 +94,13 @@ export function RealisticLayer(props: RealisticLayerProps) {
     if (!r || !mods) return;
     const p = latest.current;
     r.setScene(mods.scene.buildScene({
-      rows: p.rows, cols: p.cols, rowLabels: p.rowLabels, cells: p.cells, orientation: p.orientation,
+      rows: p.rows, cols: p.cols, rowLabels: p.rowLabels, colKeys: p.colKeys, cells: p.cells, orientation: p.orientation,
       displayKindGrid: p.displayKindGrid, kindGrid: p.kindGrid, rowGapKinds: p.rowGapKinds,
       colGapKinds: p.colGapKinds, landmarks: p.landmarks,
     }));
     r.setOptions(p.options);
     measure();
-    r.setVisible(p.visible);
+    r.setVisible(p.visible && !document.hidden);
   }, [measure]);
 
   // ---- Create the renderer (first time) or swap its textures (quality change). ----
@@ -130,6 +133,8 @@ export function RealisticLayer(props: RealisticLayerProps) {
           // Pan / zoom: App.tsx calls this right after it writes the DOM transform, so the
           // canvas and the cells move in the same frame.
           latest.current.viewListenerRef.current = () => rendererRef.current?.draw();
+          // Gesture hint from App.tsx: cheap detail while moving, full detail when it settles.
+          latest.current.interactionRef.current = (active) => rendererRef.current?.setInteracting(active);
           const ro = new ResizeObserver(() => { measure(); rendererRef.current?.draw(); });
           if (latest.current.containerRef.current) ro.observe(latest.current.containerRef.current);
           if (latest.current.landRef.current) ro.observe(latest.current.landRef.current);
@@ -151,16 +156,25 @@ export function RealisticLayer(props: RealisticLayerProps) {
   // ---- Farm data / options / visibility changed. ----
   // The cell gap is a live setting; a change re-renders the app, and this makes the scene follow it.
   const gridGap = GRID.gap;
-  const { rows, cols, rowLabels, cells, orientation, displayKindGrid, kindGrid, rowGapKinds, colGapKinds, landmarks, gridOrigin, options, visible } = props;
+  const { rows, cols, rowLabels, colKeys, cells, orientation, displayKindGrid, kindGrid, rowGapKinds, colGapKinds, landmarks, gridOrigin, options, visible } = props;
   useEffect(() => {
     sync();
-  }, [sync, rows, cols, rowLabels, cells, orientation, displayKindGrid, kindGrid, rowGapKinds, colGapKinds, landmarks, gridOrigin, gridGap, options, visible]);
+  }, [sync, rows, cols, rowLabels, colKeys, cells, orientation, displayKindGrid, kindGrid, rowGapKinds, colGapKinds, landmarks, gridOrigin, gridGap, options, visible]);
+
+  // ---- A hidden page (other tab / app in the background) must not render or generate terrain. ----
+  useEffect(() => {
+    const onVisibility = () => rendererRef.current?.setVisible(latest.current.visible && !document.hidden);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
 
   // ---- Leaving Realistic mode: release everything. ----
   useEffect(() => {
     const viewListenerRef = props.viewListenerRef;
+    const interactionRef = props.interactionRef;
     return () => {
       viewListenerRef.current = null;
+      interactionRef.current = null;
       observerRef.current?.disconnect();
       observerRef.current = null;
       rendererRef.current?.dispose();
