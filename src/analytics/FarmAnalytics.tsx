@@ -20,6 +20,8 @@ export interface AnalyticsHighlight { kind: HighlightKind; value: string; label:
 interface Props {
   cells: FarmCells;
   rowLabels: string[];
+  /** Stable column keys (cell id = `<rowLabel>-<colKey>`). Omitted = legacy 1..colsCount. */
+  colKeys?: readonly number[];
   rowsCount: number;
   colsCount: number;
   unnumberedRows: number[];
@@ -67,7 +69,7 @@ function downloadCsv(rows: TreeRow[]) {
 }
 
 export const FarmAnalytics = React.memo(function FarmAnalytics(props: Props) {
-  const { cells, rowLabels, rowsCount, colsCount, unnumberedRows, unnumberedCols, rowGapKinds, colGapKinds, coordinateAt, syncStatus, error, dataUnavailable, onSelectTree, onHighlight, onFilteredCellsChange } = props;
+  const { cells, rowLabels, colKeys, rowsCount, colsCount, unnumberedRows, unnumberedCols, rowGapKinds, colGapKinds, coordinateAt, syncStatus, error, dataUnavailable, onSelectTree, onHighlight, onFilteredCellsChange } = props;
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
   const [varietyFilter, setVarietyFilter] = useState('all');
@@ -82,7 +84,7 @@ export const FarmAnalytics = React.memo(function FarmAnalytics(props: Props) {
     const infra: Record<string, number> = { road: 0, water_canal: 0, drainage: 0, spray_tank: 0 };
     for (let r = 0; r < rowsCount; r++) {
       for (let c = 0; c < colsCount; c++) {
-        const id = `${rowLabels[r]}-${c + 1}`;
+        const id = `${rowLabels[r]}-${colKeys ? colKeys[c] : c + 1}`;
         const data = cells[id];
         // Resolve infrastructure the same way as the map: explicit cell type first,
         // then the configured row/column corridor. These are derived counts only.
@@ -154,7 +156,7 @@ export const FarmAnalytics = React.memo(function FarmAnalytics(props: Props) {
       grafted: populatedRows.filter((r) => r.grafted), uprooted: populatedRows.filter((r) => r.uprooted),
       missingStatus, missingVariety, missingRequired, latestTimestamp,
     };
-  }, [cells, rowLabels, rowsCount, colsCount, unnumberedRows, unnumberedCols, rowGapKinds, colGapKinds, coordinateAt]);
+  }, [cells, rowLabels, colKeys, rowsCount, colsCount, unnumberedRows, unnumberedCols, rowGapKinds, colGapKinds, coordinateAt]);
 
   const filteredRows = useMemo(() => {
     const rows = derived.rows.filter((row) => {
