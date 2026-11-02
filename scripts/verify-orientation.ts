@@ -162,4 +162,23 @@ test('degenerate input (unmeasured viewport / land) returns a safe default', () 
   assert.deepEqual(computeFitView({ viewportW: 0, viewportH: 0, contentW: 0, contentH: 0 }, land(100, 100), { minScale: 0.15, maxScale: 3 }), { scale: 1, x: 0, y: 0 });
 });
 
+
+test('a bottom inset (floating toolbar) keeps the whole fitted land clear of the covered strip, and any pan can reach it', () => {
+  const m = { viewportW: 390, viewportH: 700, contentW: 6600, contentH: 3700, insetBottom: 84 };
+  const land = { left: 64, top: 64, width: 6470, height: 3560 };
+  const v = computeFitView(m, land, { minScale: 0.1, maxScale: 3 });
+  const landBottom = v.y + (land.top + land.height) * v.scale;
+  assert.ok(landBottom <= 700 - 84 + 1e-6, `land bottom ${landBottom} must be above the toolbar strip`);
+  // panning to the very bottom leaves the land's bottom edge above the strip as well
+  const lowest = clampView(0, -1e9, 1, { ...m, contentH: 3700 });
+  assert.ok(lowest.y + (land.top + land.height) <= 700 - 84 + 1e-6);
+  // without an inset nothing changed
+  const plain = computeFitView({ ...m, insetBottom: undefined }, land, { minScale: 0.1, maxScale: 3 });
+  const same = computeFitView({ viewportW: 390, viewportH: 700, contentW: 6600, contentH: 3700 }, land, { minScale: 0.1, maxScale: 3 });
+  assert.deepEqual(plain, same);
+  // a small farm that fits is centred in the FREE area, not under the toolbar
+  const small = clampView(0, 0, 1, { viewportW: 800, viewportH: 600, contentW: 400, contentH: 300, insetBottom: 100 });
+  assert.equal(small.y, (500 - 300) / 2);
+});
+
 console.log(`\n${passed} orientation / viewport checks passed`);
