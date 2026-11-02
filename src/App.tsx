@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
-  ZoomIn, ZoomOut, Maximize, Save, X, Info, AlertTriangle, Bug,
-  Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Plus, Trash2, Hash,
+  Save, X, Info, AlertTriangle, Bug,
+  Droplet, Leaf, LayoutGrid, MousePointer2, Waves, Route, Cloud, HardDrive, Trash2, Hash,
   WifiOff, RefreshCw, CheckCircle2, AlertCircle, LogIn, LogOut, UserRound, LockKeyhole, Eye, EyeOff,
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
@@ -20,7 +20,7 @@ import {
   type Firestore,
 } from 'firebase/firestore';
 import { MapCell } from './farm/MapCell';
-import { buildCoordinateMap, parseCellId } from './farm/coordinates';
+import { buildCoordinateMap } from './farm/coordinates';
 import { InfrastructureLayer } from './farm/InfrastructureLayer';
 import { EditGridOverlay } from './farm/EditGridOverlay';
 import { TreeSymbols } from './farm/TreeGraphics';
@@ -35,13 +35,26 @@ import {
 } from './farm/treeVisuals';
 import { LandmarkLayer } from './farm/LandmarkLayer';
 import { RealisticLayer } from './farm/realistic/RealisticLayer';
-import { RealisticConfirmDialog, RealisticOverlays, RealisticToolbarButtons } from './farm/realistic/RealisticControls';
+import { RealisticOverlays } from './farm/realistic/RealisticControls';
 import { useRealisticMode } from './farm/realistic/useRealisticMode';
+import { FarmFence } from './farm/ui/FarmFence';
+import { GridEditControls, GridOpPanel, type GridOp } from './farm/ui/GridEditControls';
+import { FocusOverlay } from './farm/ui/FocusOverlay';
+import { SearchPanel } from './farm/ui/SearchPanel';
+import { MapToolbar } from './farm/ui/MapToolbar';
+import { MobileHeader } from './farm/ui/MobileHeader';
+import { SoundControl } from './farm/sound/SoundControl';
+import { useFarmSound } from './farm/sound/useFarmSound';
+import {
+  analyzeRemoval, cellIdFor, insertLine, removeLine, resolveColKeys, resolveRowKeys, splitCellId, storableKeys,
+  type Axis, type GridModel,
+} from './farm/gridEdit';
+import { cellIdAt, unionRects, type FocusTarget, type SearchFarm, type SearchMode } from './farm/farmSearch';
 import {
   DeleteLandmarkConfirm, LandmarkDetailsDialog, LandmarkPalette, PlacementBar, type PlacedItem,
 } from './farm/LandmarkDialog';
 import {
-  SLOT_BLOCK_MESSAGES, buildLandmarkInventory, createLandmarkType, deleteLandmark as removeLandmark, describeSlot,
+  type FarmLandmark, SLOT_BLOCK_MESSAGES, buildLandmarkInventory, createLandmarkType, deleteLandmark as removeLandmark, describeSlot,
   landmarkTypeKey, moveLandmark, normalizeLandmarkTypes, normalizeLandmarks, pickSlotAtPixel, placeLandmark,
   slotBlockedReason, updateLandmark,
   type LandmarkMap, type LandmarkTypeMap,
@@ -129,26 +142,8 @@ if (isFirebaseConfigured) {
 const DEFAULT_ROWS = 30;
 const DEFAULT_COLS = 60;
 
-// 28 حرف عربي أساسي لتوليد أسماء الصفوف (أ..ي)، ثم بعد الحرف الثامن والعشرين
-// يبدأ التركيب (أأ، أب، أت...) بنفس فكرة ترقيم أعمدة Excel (A..Z, AA, AB...)
-// حتى يدعم التطبيق إضافة عدد غير محدود من الصفوف مستقبلاً.
-const ARABIC_BASE_LETTERS = [
-  'أ', 'ب', 'ت', 'ث', 'ج', 'ح', 'خ', 'د', 'ذ', 'ر',
-  'ز', 'س', 'ش', 'ص', 'ض', 'ط', 'ظ', 'ع', 'غ', 'ف',
-  'ق', 'ك', 'ل', 'م', 'ن', 'هـ', 'و', 'ي',
-];
-
-function getRowLabel(index: number): string {
-  let n = index + 1;
-  let label = '';
-  while (n > 0) {
-    n -= 1;
-    const rem = n % ARABIC_BASE_LETTERS.length;
-    label = ARABIC_BASE_LETTERS[rem] + label;
-    n = Math.floor(n / ARABIC_BASE_LETTERS.length);
-  }
-  return label;
-}
+// Row labels (أ..ي، أأ، أب…) now come from farm/gridEdit.ts together with the stable
+// row/column keys that keep tree ids unchanged when rows/columns are inserted.
 
 const MANGO_VARIETIES = ['غير محدد', 'عويس', 'فونس', 'كيت', 'نعومي', 'زبدية', 'تيمور', 'جحراوي', 'أخرى'];
 // Stored values. 'تحتاج تقليم' is displayed as «ضعيفة» (see statusLabel) but is
@@ -180,26 +175,16 @@ const CELL_TYPE_OPTIONS: { type: CellType; emoji: string; label: string }[] = [
   { type: 'spray_tank', emoji: '🛢️', label: 'حوض رش' },
 ];
 
-// ---- Mobile header auto-hide -------------------------------------------------
+// ---- Phone layout -------------------------------------------------------------
 // Phones (narrow viewport, or a touch device in landscape). Desktop never matches.
+// The phone header is FIXED and compact (farm/ui/MobileHeader.tsx): it no longer hides on scroll.
 const MOBILE_LAYOUT_QUERY = '(max-width: 767px), (pointer: coarse) and (max-height: 500px)';
-// Vertical finger travel needed before the header reacts; prevents flicker from
-// tiny movements while panning the map.
-const HEADER_SWIPE_THRESHOLD = 28;
-// Duration of the hide/reveal slide. MUST equal --farm-header-ms in index.css
-// (the stylesheet is the single source of truth for the animation; this copy only
-// tells the map how long to keep following the header's moving edge).
-// It was 280ms; the slide is now three times slower (840ms).
-const HEADER_ANIM_MS = 840;
-// A toggle that arrives while the previous slide has barely started is ignored, so
-// a quick back-and-forth wobble cannot start overlapping slides.
-const HEADER_TOGGLE_COOLDOWN_MS = 320;
-// Standard "collapsing toolbar" convention: dragging the map content UP (like
-// scrolling down a page) hides the header; dragging it DOWN (scrolling up)
-// reveals it. Set to false to invert.
-const HIDE_HEADER_WHEN_FINGER_MOVES_UP = true;
 
 // Zoom limits of the pan/zoom surface (unchanged).
+/** Empty margin (map px) around the land inside the pan / zoom surface. */
+const MAP_MARGIN = 128;
+/** Row / column edit buttons are shown from this zoom up (smaller = unsafe to tap): a bit higher for fingers than for a mouse. */
+const controlsMinScale = () => (typeof window !== 'undefined' && window.matchMedia?.('(pointer: coarse)').matches ? 0.45 : 0.36);
 const MIN_SCALE = 0.15;
 const MAX_SCALE = 3;
 
@@ -435,8 +420,7 @@ export default function App() {
   // منتقي نوع الخلية في وضع التخطيط (بديل التبديل التلقائي القديم)
   const [typePicker, setTypePicker] = useState<{ cellId: string; x: number; y: number } | null>(null);
 
-  // قائمة "إضافة صف/عمود" الموحّدة + تأكيد إعادة تعيين المزرعة بالكامل
-  const [showAddMenu, setShowAddMenu] = useState(false);
+  // تأكيد إعادة تعيين المزرعة بالكامل
   const [showResetConfirm, setShowResetConfirm] = useState(false);
   // Physical rows can be marked as unnumbered (useful for a road/drainage row).
   // These are stored by physical row index so the existing cell IDs stay unchanged.
@@ -449,7 +433,10 @@ export default function App() {
 
   const [showLegend, setShowLegend] = useState(false);
   // Realistic (drone view) mode: state machine only. Nothing heavy exists until the user confirms.
-  const realistic = useRealisticMode();
+  const farmScopeId = user && 'uid' in user ? user.uid : null;
+  const realistic = useRealisticMode(farmScopeId);
+  // Optional ambient farm sound (Farm Layout): explicit user action only, Realistic mode only.
+  const farmSound = useFarmSound(farmScopeId, realistic.active);
   // Set by <RealisticLayer> while Realistic mode is on; called after every pan/zoom transform write.
   const realisticViewListenerRef = useRef<(() => void) | null>(null);
   const farmDocumentExistsRef = useRef(false);
@@ -479,19 +466,27 @@ export default function App() {
   const [confirmDeleteLandmark, setConfirmDeleteLandmark] = useState(false);
   const [placeMessage, setPlaceMessage] = useState<{ text: string; tone: 'ok' | 'error' } | null>(null);
 
-  // ---- Mobile header auto-hide
   const isMobileLayout = useIsMobileLayout();
-  const [headerHidden, setHeaderHidden] = useState(false);
-  const headerHiddenRef = useRef(false);
-  const headerAnimUntilRef = useRef(0);
-  const headerToggledAtRef = useRef(0);
-  const swipeRef = useRef({ x: 0, y: 0 });
-  const headerCollapsed = isMobileLayout && headerHidden;
 
-  const rowLabels = React.useMemo(
-    () => Array.from({ length: rowsCount }, (_, i) => getRowLabel(i)),
-    [rowsCount]
-  );
+  // ---- Stable row / column keys (see farm/gridEdit.ts). Stored cell ids are
+  // `<rowKey>-<colKey>`. A farm without stored keys uses the legacy sequence, so existing
+  // ids are untouched; keys are saved only after a mid-grid insert / delete.
+  const [storedRowKeys, setStoredRowKeys] = useState<string[] | undefined>(undefined);
+  const [storedColKeys, setStoredColKeys] = useState<number[] | undefined>(undefined);
+  const rowKeys = React.useMemo(() => resolveRowKeys(rowsCount, storedRowKeys), [rowsCount, storedRowKeys]);
+  const colKeys = React.useMemo(() => resolveColKeys(colsCount, storedColKeys), [colsCount, storedColKeys]);
+  // `rowLabels` is the name the rest of this file (and the realistic layer) uses for the row part of an id.
+  const rowLabels = rowKeys;
+
+  // ---- Direct row / column editing: the operation waiting for confirmation (never stored).
+  const [gridOp, setGridOp] = useState<GridOp | null>(null);
+
+  // ---- Search / "أنا فين؟" and the temporary highlight (UI state only, never stored).
+  const [searchPanel, setSearchPanel] = useState<SearchMode | null>(null);
+  const [focus, setFocus] = useState<{ target: FocusTarget; epoch: number } | null>(null);
+  // Set by <FocusOverlay> while a target exists; called after every pan / zoom transform write.
+  const focusListenerRef = useRef<(() => void) | null>(null);
+  const focusEpochRef = useRef(0);
 
   // Display coordinates are separate from the internal (stored) cell ids. The
   // numeric row/column numbers and the full "001-012" coordinate are derived from
@@ -567,11 +562,36 @@ export default function App() {
   const wheelDeltaRef = useRef(0);
   const wheelPointRef = useRef({ x: 0, y: 0 });
   const lastZoomFrameTimeRef = useRef<number | null>(null);
-  const metricsRef = useRef({ viewportW: 0, viewportH: 0, contentW: 0, contentH: 0 });
+  const metricsRef = useRef<{ viewportW: number; viewportH: number; contentW: number; contentH: number; insetBottom?: number }>({ viewportW: 0, viewportH: 0, contentW: 0, contentH: 0, insetBottom: 0 });
   const lowZoomClassRef = useRef(false);
   const xLowZoomClassRef = useRef(false);
   const landRef = useRef<HTMLDivElement>(null);
-  const containerTopRef = useRef<number | null>(null);
+  const ctlScaleRef = useRef(1);
+  const ctlsHiddenRef = useRef(false);
+  const [ctlsHidden, setCtlsHidden] = useState(false);
+  // True once the user has moved / zoomed the map themselves. Until then the automatic first fit
+  // follows the farm if its size changes (e.g. the saved farm arrives after the default grid).
+  const userMovedRef = useRef(false);
+  const modeRef = useRef<'view' | 'edit'>(mode);
+  modeRef.current = mode;
+  const resetViewRef = useRef<() => void>(() => undefined);
+  const didInitialFitRef = useRef(false);
+  // The container's page rectangle is cached (refreshed on resize / scroll) so pinch and wheel
+  // zoom never force a layout on every pointer event.
+  const containerRectRef = useRef<DOMRect | null>(null);
+  // <RealisticLayer> registers this; it is told when a pan / zoom gesture starts and settles.
+  const realisticInteractionRef = useRef<((active: boolean) => void) | null>(null);
+  const interactTimerRef = useRef<number | null>(null);
+  const markInteracting = useCallback(() => {
+    const notify = realisticInteractionRef.current;
+    if (!notify) return;
+    notify(true);
+    if (interactTimerRef.current !== null) window.clearTimeout(interactTimerRef.current);
+    interactTimerRef.current = window.setTimeout(() => {
+      interactTimerRef.current = null;
+      realisticInteractionRef.current?.(false);
+    }, 160);
+  }, []);
 
   const clampScale = (s: number) => Math.min(Math.max(MIN_SCALE, s), MAX_SCALE);
 
@@ -580,11 +600,18 @@ export default function App() {
     const content = panZoomRef.current;
     if (!container || !content) return metricsRef.current;
 
+    const rect = container.getBoundingClientRect();
+    containerRectRef.current = rect;
+    // The floating toolbar covers the bottom of the viewport: the map is fitted / centred / panned
+    // in the free area above it so the last row can always be brought clear of it.
+    const bar = container.parentElement?.querySelector('.farm-toolbar');
+    const insetBottom = bar ? Math.max(0, rect.bottom - bar.getBoundingClientRect().top + 8) : 0;
     metricsRef.current = {
       viewportW: container.clientWidth,
       viewportH: container.clientHeight,
       contentW: content.offsetWidth,
       contentH: content.offsetHeight,
+      insetBottom,
     };
     return metricsRef.current;
   }, []);
@@ -603,6 +630,26 @@ export default function App() {
     content.style.transform = `translate3d(${nextPos.x}px, ${nextPos.y}px, 0) scale(${scaleRef.current})`;
     // Realistic mode redraws its canvas in the same frame, so it never lags behind the cells.
     realisticViewListenerRef.current?.();
+    // The search highlight / "إنت هنا" marker follow the map frame by frame (only while one exists).
+    focusListenerRef.current?.();
+    // Tell the renderer a gesture is in progress (cheap detail while moving, full detail when it settles).
+    markInteracting();
+
+    // Row / column edit buttons keep a usable on-screen size when the map is zoomed out.
+    // (Set on the small controls layer only: a custom property on the map root would be inherited by
+    // every cell and force a style recalculation of ~16,000 nodes.)
+    const ctlScale = Math.round(Math.min(2, Math.max(1, 0.9 / scaleRef.current)) * 20) / 20;
+    if (ctlScale !== ctlScaleRef.current) {
+      ctlScaleRef.current = ctlScale;
+      content.querySelector<HTMLElement>('.farm-grid-ctl-layer')?.style.setProperty('--farm-ctl-k', String(ctlScale));
+    }
+    // Below this zoom the buttons would be too small / too close to tap safely: hide them (and say so).
+    const tooSmall = scaleRef.current < controlsMinScale();
+    if (tooSmall !== ctlsHiddenRef.current) {
+      ctlsHiddenRef.current = tooSmall;
+      content.dataset.ctl = tooSmall ? 'off' : 'on';
+      setCtlsHidden(tooSmall);
+    }
 
     const shouldUseLowZoom = scaleRef.current < 0.55;
     if (shouldUseLowZoom !== lowZoomClassRef.current) {
@@ -673,7 +720,7 @@ export default function App() {
   const zoomAtPoint = useCallback((clientX: number, clientY: number, newScaleRaw: number) => {
     const container = containerRef.current;
     if (!container) return;
-    const rect = container.getBoundingClientRect();
+    const rect = containerRectRef.current ?? container.getBoundingClientRect();
     const px = clientX - rect.left;
     const py = clientY - rect.top;
     const oldScale = scaleRef.current;
@@ -705,7 +752,8 @@ export default function App() {
     const view = computeFitView(
       metrics,
       { left: land.offsetLeft, top: land.offsetTop, width: land.offsetWidth, height: land.offsetHeight },
-      { minScale: MIN_SCALE, maxScale: MAX_SCALE },
+      // Farm Layout draws its + / − buttons just outside the fence: leave room for them.
+      { minScale: MIN_SCALE, maxScale: MAX_SCALE, margin: modeRef.current === 'edit' ? 40 : 16 },
     );
     stopZoomAnimation();
     scaleRef.current = view.scale;
@@ -715,26 +763,107 @@ export default function App() {
     writeTransform();
   }, [measureMap, stopZoomAnimation, writeTransform]);
 
+  resetViewRef.current = resetView;
+  // Entering / leaving Farm Layout re-fits the map if the user has not moved it yet (room for the buttons).
+  useEffect(() => { if (didInitialFitRef.current && !userMovedRef.current) resetViewRef.current(); }, [mode]);
+
   const getRealisticView = useCallback(
     () => ({ scale: scaleRef.current, x: posRef.current.x, y: posRef.current.y }),
     [],
   );
 
   const zoomInBtn = useCallback(() => {
+    userMovedRef.current = true;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, scaleRef.current * 1.2);
   }, [zoomAtPoint]);
 
   const zoomOutBtn = useCallback(() => {
+    userMovedRef.current = true;
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect) return;
     zoomAtPoint(rect.left + rect.width / 2, rect.top + rect.height / 2, scaleRef.current / 1.2);
   }, [zoomAtPoint]);
 
+  // Pinch: the map follows the fingers exactly (no easing lag). The world point that was under
+  // the PREVIOUS midpoint stays under the CURRENT one, so a two-finger drag also pans.
+  const pinchMidRef = useRef<{ x: number; y: number } | null>(null);
+  const pinchZoomAtPoint = useCallback((clientX: number, clientY: number, newScaleRaw: number) => {
+    const container = containerRef.current;
+    if (!container) return;
+    const rect = containerRectRef.current ?? container.getBoundingClientRect();
+    const px = clientX - rect.left;
+    const py = clientY - rect.top;
+    const prev = pinchMidRef.current ?? { x: px, y: py };
+    pinchMidRef.current = { x: px, y: py };
+    const oldScale = scaleRef.current;
+    const newScale = clampScale(newScaleRaw);
+    const worldX = (prev.x - posRef.current.x) / oldScale;
+    const worldY = (prev.y - posRef.current.y) / oldScale;
+    scaleRef.current = newScale;
+    targetScaleRef.current = newScale;
+    const pos = clampPosition(px - worldX * newScale, py - worldY * newScale, newScale);
+    posRef.current = pos;
+    targetPosRef.current = pos;
+    scheduleTransform();
+  }, [clampPosition, scheduleTransform]);
+
+  // ---- Camera for search results: pan + zoom so the target (grid-space bounds) is easy to see.
+  const getGridOffset = useCallback(() => {
+    const land = landRef.current;
+    if (!land) return null;
+    const origin = getGridOrigin(orientation);
+    return { x: land.offsetLeft + land.clientLeft + origin.left, y: land.offsetTop + land.clientTop + origin.top };
+  }, [orientation]);
+
+  const focusOnTarget = useCallback((target: FocusTarget) => {
+    userMovedRef.current = true;
+    const container = containerRef.current;
+    const off = getGridOffset();
+    if (!container || !off) return;
+    const m = measureMap();
+    const b = target.bounds;
+    // Keep the target clear of the top chip and the bottom toolbar.
+    const topInset = 64; const bottomInset = 96;
+    const availW = m.viewportW * 0.86;
+    const availH = Math.max(120, m.viewportH - topInset - bottomInset) * 0.86;
+    const fit = Math.min(availW / Math.max(b.w, 1), availH / Math.max(b.h, 1));
+    const long = target.kind === 'row' || target.kind === 'column' || target.kind === 'infra';
+    // A single tree / point is shown large; long things are fitted, but never below a readable scale:
+    // below it, we start at the beginning of the row / column so it can be followed to its end.
+    const MIN_FOCUS = 0.2;
+    let scale = long ? Math.max(Math.min(fit, 1.2), MIN_FOCUS) : Math.min(Math.max(fit, 0.9), 1.35);
+    scale = clampScale(scale);
+    let cx = b.x + b.w / 2; let cy = b.y + b.h / 2;
+    if (long && fit < MIN_FOCUS && target.ends?.[0]) { cx = target.ends[0].x; cy = target.ends[0].y; }
+    const viewCenterY = topInset + (m.viewportH - topInset - bottomInset) / 2;
+    const desired = clampPosition(m.viewportW / 2 - (off.x + cx) * scale, viewCenterY - (off.y + cy) * scale, scale);
+    const reduced = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    targetScaleRef.current = scale;
+    targetPosRef.current = desired;
+    if (reduced) {
+      stopZoomAnimation();
+      scaleRef.current = scale;
+      posRef.current = desired;
+      writeTransform();
+    } else {
+      animateZoom();
+    }
+  }, [animateZoom, clampPosition, getGridOffset, measureMap, stopZoomAnimation, writeTransform]);
+
+  const selectFocus = useCallback((target: FocusTarget) => {
+    focusEpochRef.current += 1;
+    setFocus({ target, epoch: focusEpochRef.current });
+    setSearchPanel(null);
+    focusOnTarget(target);
+  }, [focusOnTarget]);
+  const clearFocus = useCallback(() => setFocus(null), []);
+
   // ---- Mouse wheel: accumulate wheel bursts and feed one smooth zoom target
   // per frame. This keeps the map responsive without React renders per event.
   const handleWheel = useCallback((e: WheelEvent | React.WheelEvent) => {
+    userMovedRef.current = true;
     // Prevent the browser/page from scrolling while the pointer is over the farm map.
     e.preventDefault();
 
@@ -768,33 +897,25 @@ export default function App() {
     if (!container) return;
 
     measureMap();
-    containerTopRef.current = container.getBoundingClientRect().top;
 
+    let lastContentSize = '';
     const resizeObserver = new ResizeObserver(() => {
-      const top = container.getBoundingClientRect().top;
-      const lastTop = containerTopRef.current;
-      containerTopRef.current = top;
       measureMap();
-
-      // While the mobile header slides away/back, the map viewport grows/shrinks
-      // at its TOP edge. Shift the map by the same amount so the content stays put
-      // under the finger instead of jumping. Only during that animation: every
-      // other layout change keeps its original behaviour.
-      if (lastTop !== null && performance.now() < headerAnimUntilRef.current) {
-        const shift = lastTop - top;
-        if (shift !== 0) {
-          posRef.current = { x: posRef.current.x, y: posRef.current.y + shift };
-          targetPosRef.current = { x: targetPosRef.current.x, y: targetPosRef.current.y + shift };
-          if (panStart.current) panStart.current = { x: panStart.current.x, y: panStart.current.y - shift };
-        }
-      }
-
+      const sizeKey = `${metricsRef.current.contentW}x${metricsRef.current.contentH}`;
+      const farmSizeChanged = lastContentSize !== '' && sizeKey !== lastContentSize;
+      lastContentSize = sizeKey;
+      if (farmSizeChanged && didInitialFitRef.current && !userMovedRef.current) { resetViewRef.current(); return; }
       const clamped = clampPosition(posRef.current.x, posRef.current.y, scaleRef.current);
       posRef.current = clamped;
       targetPosRef.current = clampPosition(targetPosRef.current.x, targetPosRef.current.y, targetScaleRef.current);
-      if (performance.now() < headerAnimUntilRef.current) writeTransform(); // same frame, no 1-frame lag
-      else scheduleTransform();
+      scheduleTransform();
     });
+    // The page rectangle can move without a resize (mobile browser chrome, keyboard, rotation).
+    const refreshRect = () => { containerRectRef.current = container.getBoundingClientRect(); };
+    window.addEventListener('resize', refreshRect);
+    window.addEventListener('orientationchange', refreshRect);
+    window.visualViewport?.addEventListener('resize', refreshRect);
+    window.visualViewport?.addEventListener('scroll', refreshRect);
     resizeObserver.observe(container);
     if (panZoomRef.current) resizeObserver.observe(panZoomRef.current);
 
@@ -808,6 +929,11 @@ export default function App() {
 
     return () => {
       resizeObserver.disconnect();
+      window.removeEventListener('resize', refreshRect);
+      window.removeEventListener('orientationchange', refreshRect);
+      window.visualViewport?.removeEventListener('resize', refreshRect);
+      window.visualViewport?.removeEventListener('scroll', refreshRect);
+      if (interactTimerRef.current !== null) { window.clearTimeout(interactTimerRef.current); interactTimerRef.current = null; }
       cancelAnimationFrame(initialFrame);
       if (wheelFrameRef.current !== null) cancelAnimationFrame(wheelFrameRef.current);
       if (transformFrameRef.current !== null) cancelAnimationFrame(transformFrameRef.current);
@@ -849,7 +975,6 @@ export default function App() {
   // Show the whole farm once the data has loaded, and again whenever the user picks
   // another orientation (the picture just changed, so the old pan position is
   // meaningless). Same fit as the Reset View button.
-  const didInitialFitRef = useRef(false);
   const fittedOrientationRef = useRef<MapOrientation>('original');
   useEffect(() => {
     if (!user) didInitialFitRef.current = false;
@@ -875,6 +1000,8 @@ export default function App() {
           setCellsData(parsed.cells || {});
           setRowsCount(parsed.rowsCount || DEFAULT_ROWS);
           setColsCount(parsed.colsCount || DEFAULT_COLS);
+          setStoredRowKeys(Array.isArray(parsed.rowKeys) ? parsed.rowKeys : undefined);
+          setStoredColKeys(Array.isArray(parsed.colKeys) ? parsed.colKeys : undefined);
           setUnlabeledRows(Array.isArray(parsed.unlabeledRows) ? parsed.unlabeledRows.filter((n: unknown) => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(parsed.unlabeledCols) ? parsed.unlabeledCols.filter((n: unknown) => Number.isInteger(n)) : []);
           setRowGapKinds(parsed.rowGapKinds && typeof parsed.rowGapKinds === 'object' ? parsed.rowGapKinds : {});
@@ -900,6 +1027,8 @@ export default function App() {
       setCellsData({});
       setRowsCount(DEFAULT_ROWS);
       setColsCount(DEFAULT_COLS);
+      setStoredRowKeys(undefined);
+      setStoredColKeys(undefined);
       setUnlabeledRows([]);
       setUnlabeledCols([]);
       setRowGapKinds({});
@@ -907,6 +1036,9 @@ export default function App() {
       setLandmarks({});
       setLandmarkTypes({});
       setOrientation('original');
+      setGridOp(null);
+      setFocus(null);
+      setSearchPanel(null);
       setSession(null);
       setShowPalette(false);
       setSelectedLandmarkId(null);
@@ -945,6 +1077,8 @@ export default function App() {
             setCellsData({});
             setRowsCount(DEFAULT_ROWS);
             setColsCount(DEFAULT_COLS);
+            setStoredRowKeys(undefined);
+            setStoredColKeys(undefined);
             setUnlabeledRows([]);
             setUnlabeledCols([]);
             setRowGapKinds({});
@@ -960,6 +1094,8 @@ export default function App() {
           setCellsData(data.cells || {});
           setRowsCount(data.rowsCount || DEFAULT_ROWS);
           setColsCount(data.colsCount || DEFAULT_COLS);
+          setStoredRowKeys(Array.isArray(data.rowKeys) ? data.rowKeys : undefined);
+          setStoredColKeys(Array.isArray(data.colKeys) ? data.colKeys : undefined);
           setUnlabeledRows(Array.isArray(data.unlabeledRows) ? data.unlabeledRows.filter((n): n is number => Number.isInteger(n)) : []);
           setUnlabeledCols(Array.isArray(data.unlabeledCols) ? data.unlabeledCols.filter((n): n is number => Number.isInteger(n)) : []);
           setRowGapKinds(data.rowGapKinds && typeof data.rowGapKinds === 'object' ? data.rowGapKinds as Record<number, GapKind> : {});
@@ -992,6 +1128,8 @@ export default function App() {
           setCellsData({});
           setRowsCount(DEFAULT_ROWS);
           setColsCount(DEFAULT_COLS);
+          setStoredRowKeys(undefined);
+          setStoredColKeys(undefined);
           setUnlabeledRows([]);
           setUnlabeledCols([]);
           setRowGapKinds({});
@@ -1068,7 +1206,12 @@ export default function App() {
     nextLandmarks = landmarks,
     nextLandmarkTypes = landmarkTypes,
     nextOrientation = orientation,
+    nextRowKeys: string[] = rowKeys,
+    nextColKeys: number[] = colKeys,
   ) => {
+    // Keys equal to the legacy sequence are not stored at all (existing farms stay byte-identical).
+    const nextStoredKeys = storableKeys(nextRowKeys, nextColKeys);
+    const currentStoredKeys = storableKeys(rowKeys, colKeys);
     const cleanedUnlabeledRows = nextUnlabeledRows.filter((index) => Number.isInteger(index) && index >= 0 && index < nextRows);
     const cleanedUnlabeledCols = nextUnlabeledCols.filter((index) => Number.isInteger(index) && index >= 0 && index < nextCols);
     const cleanedRowGapKinds = Object.fromEntries(
@@ -1094,12 +1237,17 @@ export default function App() {
     setLandmarks(nextLandmarks);
     setLandmarkTypes(nextLandmarkTypes);
     setOrientation(nextOrientation);
+    setStoredRowKeys(nextStoredKeys.rowKeys);
+    setStoredColKeys(nextStoredKeys.colKeys);
 
     const payload = {
       ownerUid: user && 'uid' in user && user.uid !== 'local-user' ? user.uid : undefined,
       cells: nextCells,
       rowsCount: nextRows,
       colsCount: nextCols,
+      // Optional fields: present only when the keys differ from the legacy sequence.
+      ...(nextStoredKeys.rowKeys ? { rowKeys: nextStoredKeys.rowKeys } : {}),
+      ...(nextStoredKeys.colKeys ? { colKeys: nextStoredKeys.colKeys } : {}),
       unlabeledRows: cleanedUnlabeledRows,
       unlabeledCols: cleanedUnlabeledCols,
       rowGapKinds: cleanedRowGapKinds,
@@ -1154,6 +1302,8 @@ export default function App() {
         // Display preference stored with the other layout settings (one optional field).
         if (nextOrientation !== orientation) updates.mapOrientation = nextOrientation;
 
+        if (JSON.stringify(nextStoredKeys.rowKeys) !== JSON.stringify(currentStoredKeys.rowKeys)) updates.rowKeys = nextStoredKeys.rowKeys ?? deleteField();
+        if (JSON.stringify(nextStoredKeys.colKeys) !== JSON.stringify(currentStoredKeys.colKeys)) updates.colKeys = nextStoredKeys.colKeys ?? deleteField();
         if (nextRows !== rowsCount) updates.rowsCount = nextRows;
         if (nextCols !== colsCount) updates.colsCount = nextCols;
         if (JSON.stringify(cleanedUnlabeledRows) !== JSON.stringify(unlabeledRows)) updates.unlabeledRows = cleanedUnlabeledRows;
@@ -1192,10 +1342,59 @@ export default function App() {
         setSyncStatus('error');
       }
     }
-  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, landmarks, landmarkTypes, orientation]);
+  }, [user, cellsData, rowsCount, colsCount, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, landmarks, landmarkTypes, orientation, rowKeys, colKeys]);
 
-  const addRow = () => persistFarmState(cellsData, rowsCount + 1, colsCount);
-  const addColumn = () => persistFarmState(cellsData, rowsCount, colsCount + 1);
+  // ---- Direct row / column editing (Farm Layout) ---------------------------
+  // Tapping a "+" / "−" only SELECTS the operation (gridOp): the exact gap or line is
+  // highlighted on the grid and nothing changes until the user confirms. The pure
+  // logic (gridEdit.ts) never renames or moves an existing record.
+  const gridModel = React.useMemo<GridModel<FarmLandmark>>(() => ({
+    rowKeys, colKeys, cells: cellsData, unlabeledRows, unlabeledCols,
+    rowGapKinds, colGapKinds, landmarks,
+  }), [rowKeys, colKeys, cellsData, unlabeledRows, unlabeledCols, rowGapKinds, colGapKinds, landmarks]);
+
+  const gridImpact = React.useMemo(
+    () => (gridOp?.type === 'remove' && gridOp.index < (gridOp.axis === 'row' ? rowsCount : colsCount)
+      ? analyzeRemoval(gridModel, gridOp.axis, gridOp.index)
+      : null),
+    [gridOp, gridModel, rowsCount, colsCount],
+  );
+
+  const requestGridOp = useCallback((op: GridOp) => {
+    setTypePicker(null);
+    setSession(null);
+    setGridOp(op);
+  }, []);
+  const cancelGridOp = useCallback(() => setGridOp(null), []);
+
+  const confirmGridOp = () => {
+    const op = gridOp;
+    if (!op) return;
+    setGridOp(null);
+    try {
+      const next = op.type === 'insert' ? insertLine(gridModel, op.axis, op.index) : removeLine(gridModel, op.axis, op.index);
+      // The geometry changed: a previous search highlight would point at the old layout.
+      setFocus(null);
+      setSelectedTree(null);
+      setIsModalOpen(false);
+      persistFarmState(
+        next.cells, next.rowKeys.length, next.colKeys.length,
+        next.unlabeledRows, next.unlabeledCols,
+        next.rowGapKinds as Record<number, GapKind>, next.colGapKinds as Record<number, GapKind>,
+        next.landmarks, landmarkTypes, orientation, next.rowKeys, next.colKeys,
+      );
+    } catch (err) {
+      console.error('Grid edit rejected', err);
+      setError('تعذر تنفيذ تعديل الشبكة. لم يتم تغيير أي بيانات.');
+    }
+  };
+
+  // Leaving Farm Layout drops any half-finished grid operation.
+  useEffect(() => { if (mode !== 'edit') setGridOp(null); }, [mode]);
+  // A freshly mounted controls layer gets the current on-screen size factor right away.
+  useEffect(() => {
+    if (mode === 'edit') panZoomRef.current?.querySelector<HTMLElement>('.farm-grid-ctl-layer')?.style.setProperty('--farm-ctl-k', String(ctlScaleRef.current));
+  }, [mode, rowsCount, colsCount]);
 
   // إعادة تعيين المزرعة بالكامل: مسح كل بيانات الخلايا (أشجار/مروى/مصرف/طريق)
   // مع الإبقاء على حجم الشبكة الحالي (عدد الصفوف/الأعمدة) كما هو — قرار مقصود:
@@ -1250,52 +1449,6 @@ export default function App() {
     setTypePicker(null);
     persistFarmState(updatedCells, rowsCount, colsCount);
   };
-
-  // ---- Mobile header: hide on a deliberate upward drag, reveal on a downward one.
-  const applyHeaderHidden = (next: boolean, force = false) => {
-    if (headerHiddenRef.current === next) return;
-    const now = performance.now();
-    // A flick that reverses a slide which has only just started is ignored (the
-    // swipe has to continue to count), so slides never pile up. The handle button
-    // always works (force).
-    if (!force && now - headerToggledAtRef.current < HEADER_TOGGLE_COOLDOWN_MS) return;
-    headerToggledAtRef.current = now;
-    headerHiddenRef.current = next;
-    // Window during which the map is shifted to follow the header's slide
-    // (the full slide plus a little slack).
-    headerAnimUntilRef.current = now + HEADER_ANIM_MS + 120;
-    setHeaderHidden(next);
-  };
-
-  const trackHeaderSwipe = (dx: number, dy: number) => {
-    const run = swipeRef.current;
-    // Reversing direction starts a new run, so a wobble never counts as a swipe.
-    if (dy !== 0 && run.y !== 0 && Math.sign(dy) !== Math.sign(run.y)) {
-      run.x = 0;
-      run.y = 0;
-    }
-    run.x += dx;
-    run.y += dy;
-    if (Math.abs(run.y) < HEADER_SWIPE_THRESHOLD) return;
-    // A mostly-sideways pan is not a header gesture.
-    if (Math.abs(run.y) < Math.abs(run.x) * 1.2) {
-      run.x = 0;
-      run.y = 0;
-      return;
-    }
-    const fingerMovedUp = run.y < 0;
-    applyHeaderHidden(HIDE_HEADER_WHEN_FINGER_MOVES_UP ? fingerMovedUp : !fingerMovedUp);
-    run.x = 0;
-    run.y = 0;
-  };
-
-  // Leaving the phone layout (rotation / resize / desktop) always restores the header.
-  useEffect(() => {
-    if (!isMobileLayout && headerHiddenRef.current) {
-      headerHiddenRef.current = false;
-      setHeaderHidden(false);
-    }
-  }, [isMobileLayout]);
 
   // ---- Landmarks -----------------------------------------------------------
   // Where cell (0,0) is DRAWN: the label strips move with the mirroring, so every
@@ -1434,6 +1587,10 @@ export default function App() {
 
   const handlePointerDown = (e: React.PointerEvent) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    userMovedRef.current = true;
+    // Row / column edit buttons are real buttons: they must receive their own click, so a
+    // press that starts on one is not a map gesture (no pointer capture, no pan).
+    if ((e.target as HTMLElement | null)?.closest?.('[data-grid-ctl-layer]')) return;
     try {
       (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
     } catch { /* ignore */ }
@@ -1443,7 +1600,6 @@ export default function App() {
     if (wasEmpty) {
       dragDistance.current = 0;
       pinchOccurred.current = false;
-      swipeRef.current = { x: 0, y: 0 };
     }
 
     if (pointers.current.size === 1) {
@@ -1462,6 +1618,7 @@ export default function App() {
         distance: Math.hypot(dx, dy) || 1,
         scale: scaleRef.current,
       };
+      pinchMidRef.current = null;
       panStart.current = null;
       pinchOccurred.current = true;
     }
@@ -1474,10 +1631,6 @@ export default function App() {
     const moveDy = e.clientY - prev.y;
     dragDistance.current += Math.abs(moveDx) + Math.abs(moveDy);
     pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-
-    if (isMobileLayout && e.pointerType !== 'mouse' && pointers.current.size === 1 && !pinchOccurred.current && !session) {
-      trackHeaderSwipe(moveDx, moveDy);
-    }
 
     if (pointers.current.size === 1 && panStart.current) {
       const next = clampPosition(
@@ -1495,11 +1648,12 @@ export default function App() {
       const distance = Math.hypot(dx, dy) || 1;
       const midX = (pts[0].x + pts[1].x) / 2;
       const midY = (pts[0].y + pts[1].y) / 2;
-      zoomAtPoint(midX, midY, pinchStart.current.scale * (distance / pinchStart.current.distance));
+      pinchZoomAtPoint(midX, midY, pinchStart.current.scale * (distance / pinchStart.current.distance));
     }
   };
 
   const endGesture = (e: React.PointerEvent, isTapCandidate: boolean) => {
+    if (!pointers.current.has(e.pointerId)) return; // e.g. a press that began on an edit button
     pointers.current.delete(e.pointerId);
 
     if (pointers.current.size === 1) {
@@ -1560,22 +1714,40 @@ export default function App() {
   // editing a tree never rebuilds or repaints the road/canal overlay.
   const kindGridRef = useRef<KindGrid | null>(null);
   const kindGrid = React.useMemo(() => {
-    const next = buildKindGrid(cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds);
+    const next = buildKindGrid(cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds, colKeys);
     if (kindGridRef.current && kindGridRef.current.signature === next.signature) return kindGridRef.current;
     kindGridRef.current = next;
     return next;
-  }, [cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds]);
+  }, [cellsData, rowLabels, colsCount, rowGapKinds, colGapKinds, colKeys]);
 
   // Human-readable coordinate of the tree whose modal is open (display only).
   const selectedTreeCoordinate = React.useMemo(() => {
     if (!selectedTree) return '';
-    const parsed = parseCellId(selectedTree);
-    const rowIndex = parsed ? rowLabels.indexOf(parsed.rowLabel) : -1;
-    if (!parsed || rowIndex === -1 || parsed.colIndex >= colsCount) return selectedTree;
-    return coordMap.describeAt(rowIndex, parsed.colIndex);
-  }, [selectedTree, rowLabels, colsCount, coordMap]);
+    const parsed = splitCellId(selectedTree);
+    const rowIndex = parsed ? rowKeys.indexOf(parsed.rowKey) : -1;
+    const colIndex = parsed ? colKeys.indexOf(parsed.colKey) : -1;
+    if (!parsed || rowIndex === -1 || colIndex === -1) return selectedTree;
+    return coordMap.describeAt(rowIndex, colIndex);
+  }, [selectedTree, rowKeys, colKeys, coordMap]);
 
   const selectedCellId = mode === 'edit' ? (typePicker?.cellId ?? null) : (isModalOpen ? selectedTree : null);
+
+  // ---- Search / "أنا فين؟" model: derived from the SAME data both map modes draw. Nothing stored.
+  const searchModel = React.useMemo<SearchFarm>(() => ({
+    rows: rowsCount,
+    cols: colsCount,
+    orientation,
+    rowNumbers: coordMap.rowLabels.map((l) => (l ? Number(l) : null)),
+    colNumbers: coordMap.colLabels.map((l) => (l ? Number(l.slice(1)) : null)),
+    rowLabels: coordMap.rowLabels,
+    colLabels: coordMap.colLabels,
+    rowKeys,
+    colKeys,
+    cells: cellsData,
+    landmarks,
+    kindGrid,
+    coordinateAt: coordMap.coordinateAt,
+  }), [rowsCount, colsCount, orientation, coordMap, rowKeys, colKeys, cellsData, landmarks, kindGrid]);
 
   // ---- Landmark view-model (all derived; nothing here is stored) -------------
   const describeLandmarkSlot = React.useCallback(
@@ -1663,7 +1835,7 @@ export default function App() {
             <React.Fragment key={rowLetter}>
               {!flipX && rowLabelCell}
               {colOrder.map((colIndex) => {
-                const cellId = `${rowLetter}-${colIndex + 1}`;
+                const cellId = cellIdFor(rowLetter, colKeys[colIndex]);
                 // Visible coordinate ("12-07"); empty for cells in an unnumbered row/column.
                 // The stored id above is never derived from it, nor from the orientation.
                 const displayCellLabel = coordMap.coordinateAt(rowIndex, colIndex) ?? '';
@@ -1690,7 +1862,7 @@ export default function App() {
         {flipY && headerRow}
       </>
     );
-  }, [cellsData, rowLabels, rowOrder, colOrder, flipX, flipY, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
+  }, [cellsData, rowLabels, colKeys, rowOrder, colOrder, flipX, flipY, displayRowLabels, displayColLabels, coordMap, rowGapKinds, colGapKinds, kindGrid, mode, selectedCellId]);
 
   const handleLogout = async () => {
     if (!auth) return;
@@ -1718,13 +1890,21 @@ export default function App() {
   }
 
   return (
-    <div className="flex flex-col h-screen bg-gray-100 font-sans overflow-hidden" dir="rtl">
+    <div className="farm-app-root flex flex-col bg-gray-100 font-sans overflow-hidden" dir="rtl">
 
-      {/* شريط العنوان وأدوات التحكم في الوضع.
-          على الجوال فقط: يُخفى بانزلاق عند سحب الخريطة للأعلى ويظهر عند السحب للأسفل
-          (انظر useIsMobileLayout). على سطح المكتب الغلاف لا يغيّر شيئاً. */}
-      <div className="farm-header-collapse" data-hidden={headerCollapsed ? 'true' : undefined}>
-      <div className="farm-header-collapse-inner" aria-hidden={headerCollapsed ? true : undefined}>
+      {/* الجوال: شريط علوي صغير وثابت (لا يختفي ولا يتحرك). سطح المكتب: الشريط الكامل كما كان. */}
+      {isMobileLayout ? (
+        <MobileHeader
+          farmName="مزرعة رشاد الساداتي"
+          mode={mode}
+          onModeChange={setMode}
+          syncStatus={syncStatus}
+          isCloud={isFirebaseConfigured}
+          onLogout={user && 'uid' in user && user.uid !== 'local-user' ? handleLogout : undefined}
+          username={user && 'displayName' in user && user.displayName ? String(user.displayName) : undefined}
+          onToggleLegend={() => setShowLegend((v) => !v)}
+        />
+      ) : (
       <header className="bg-emerald-900 text-white p-4 shadow-md flex flex-wrap gap-4 justify-between items-center z-20 relative">
         <div className="flex items-center gap-3">
           <div className="bg-emerald-100 p-2 rounded-lg text-emerald-800">
@@ -1821,8 +2001,7 @@ export default function App() {
           </button>
         )}
       </header>
-      </div>
-      </div>
+      )}
 
       {/* التنبيهات والأخطاء */}
       {error && (
@@ -1835,36 +2014,11 @@ export default function App() {
       {/* شريط أدوات وضع التخطيط: تنبيه + إضافة صف/عمود + إعادة تعيين */}
       {mode === 'edit' && (
         <div className="bg-amber-100 text-amber-900 px-4 py-2 shadow-sm z-10 border-b border-amber-200 flex flex-wrap items-center justify-between gap-2">
-          <span className="text-sm font-semibold">⚠️ أنت الآن في وضع التخطيط: اضغط على أي مساحة لاختيار نوعها من القائمة</span>
+          <span className="text-sm font-semibold">⚠️ أنت الآن في وضع التخطيط: اضغط على أي مساحة لاختيار نوعها · استخدم <b>+</b> و <b>−</b> بجانب الصفوف والأعمدة لإضافتها أو حذفها (كبّر الخريطة لإظهارها)</span>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="relative">
-              <button
-                onClick={() => setShowAddMenu((v) => !v)}
-                className="flex items-center gap-1 bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-bold px-3 py-1.5 rounded-lg shadow-sm transition-colors"
-              >
-                <Plus size={14} /> إضافة
-              </button>
-              {showAddMenu && (
-                <>
-                  <div className="fixed inset-0 z-40" onClick={() => setShowAddMenu(false)} />
-                  <div className="absolute top-full mt-1 left-0 z-50 bg-white rounded-lg shadow-xl border border-gray-200 overflow-hidden min-w-[140px]">
-                    <button
-                      onClick={() => { setShowAddMenu(false); addRow(); }}
-                      className="w-full text-right px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 transition-colors"
-                    >
-                      + صف جديد
-                    </button>
-                    <button
-                      onClick={() => { setShowAddMenu(false); addColumn(); }}
-                      className="w-full text-right px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-emerald-50 transition-colors border-t border-gray-100"
-                    >
-                      + عمود جديد
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+            {/* صوت المزرعة (اختياري): تشغيل صريح فقط، ويعمل مع الوضع الواقعي */}
+            <SoundControl sound={farmSound} realisticActive={realistic.active} />
 
             {/* اتجاه الخريطة: اختيار مباشر (وليس قلباً إضافياً). يعكس الأشجار والطرق والمصارف والعناصر والتسميات معاً. */}
             <div className="flex items-center gap-1.5" role="group" aria-label="اتجاه الخريطة" data-testid="orientation-control">
@@ -2015,42 +2169,12 @@ export default function App() {
       {/* منطقة الخريطة */}
       <main className="flex-1 relative overflow-hidden bg-[#e4e0ce]">
 
-        {/* مقبض إظهار الشريط العلوي (جوال فقط، يظهر عندما يكون الشريط مخفياً) */}
-        <button
-          type="button"
-          className="farm-header-handle"
-          data-visible={headerCollapsed ? 'true' : undefined}
-          tabIndex={headerCollapsed ? 0 : -1}
-          aria-label="إظهار الشريط العلوي"
-          onClick={() => applyHeaderHidden(false, true)}
-        >
-          <svg width="18" height="10" viewBox="0 0 18 10" aria-hidden="true" focusable="false">
-            <path d="M2 2l7 6 7-6" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-
-        {/* أزرار الزووم */}
-        <div className="absolute top-4 right-4 z-10 flex flex-col gap-2 bg-white p-2 rounded-lg shadow-md border border-gray-200">
-          <button onClick={zoomInBtn} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="تكبير">
-            <ZoomIn size={20} />
-          </button>
-          <div className="w-full h-px bg-gray-200 my-1"></div>
-          <button onClick={zoomOutBtn} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="تصغير">
-            <ZoomOut size={20} />
-          </button>
-          <div className="w-full h-px bg-gray-200 my-1"></div>
-          <button onClick={resetView} className="p-2 hover:bg-emerald-50 rounded text-gray-700 hover:text-emerald-700 transition-colors" title="إعادة ضبط الرؤية">
-            <Maximize size={20} />
-          </button>
-          <RealisticToolbarButtons mode={realistic} />
-        </div>
-
         <RealisticOverlays mode={realistic} />
 
         {/* دليل الرموز: الأصناف وحالات الشجرة والبنية التحتية */}
-        <div className="absolute bottom-4 right-4 z-10 flex flex-col items-start gap-2" dir="rtl">
+        <div className="farm-legend-wrap" dir="rtl">
           {showLegend && (
-            <div className="farm-legend-panel" role="dialog" aria-label="دليل الرموز">
+            <div className="farm-legend-panel" role="dialog" aria-label="دليل الرموز" data-testid="legend-panel">
               <div className="farm-legend-title">حالة الشجرة</div>
               <div className="farm-legend-grid">
                 <span className="farm-legend-item"><i className="farm-legend-dot" style={{ background: '#059669' }} />سليمة</span>
@@ -2090,14 +2214,6 @@ export default function App() {
               )}
             </div>
           )}
-          <button
-            type="button"
-            onClick={() => setShowLegend((v) => !v)}
-            aria-expanded={showLegend}
-            className="farm-legend-btn"
-          >
-            دليل الرموز
-          </button>
         </div>
 
         {/* لوحة العمل (Canvas) — تحكم موحّد بالفأرة واللمس عبر Pointer Events */}
@@ -2117,6 +2233,7 @@ export default function App() {
               rows={rowsCount}
               cols={colsCount}
               rowLabels={rowLabels}
+              colKeys={colKeys}
               cells={cellsData}
               orientation={orientation}
               displayKindGrid={displayKindGrid}
@@ -2129,6 +2246,7 @@ export default function App() {
               landRef={landRef}
               getView={getRealisticView}
               viewListenerRef={realisticViewListenerRef}
+              interactionRef={realisticInteractionRef}
               onProgress={realistic.onProgress}
               onReady={realistic.onReady}
               onError={realistic.onError}
@@ -2137,8 +2255,10 @@ export default function App() {
           )}
           <div
             ref={panZoomRef}
-            style={{ transformOrigin: '0 0' }}
-            className="absolute left-0 top-0 inline-block p-16"
+            // The margin around the land is room to pan past the fence: the Farm Layout +/- buttons live
+            // there, and it keeps them off the very edge of the screen (the iPhone back-swipe zone).
+            style={{ transformOrigin: '0 0', padding: MAP_MARGIN }}
+            className="absolute left-0 top-0 inline-block"
           >
             {/* أرضية المزرعة والشبكة */}
             <div
@@ -2158,6 +2278,8 @@ export default function App() {
             >
               {/* Both are absolutely positioned, so they take no grid cell. The
                   overlay is first in DOM order so trees/cells paint above it. */}
+              {/* Boundary fence: part of the map's content space, sized from the grid itself. */}
+              <FarmFence rows={rowsCount} cols={colsCount} />
               <TreeSymbols />
               <InfrastructureLayer grid={displayKindGrid} origin={gridOrigin} />
               {/* Edit mode: ONE dashed-cell pattern instead of an outline on every cell. */}
@@ -2176,12 +2298,79 @@ export default function App() {
                 movingId={session?.kind === 'move' ? session.landmarkId : null}
               />
               {gridCells}
+              {/* Farm Layout: + / − attached to the real rows and columns (same coordinates as the cells). */}
+              {mode === 'edit' && (
+                <GridEditControls
+                  rows={rowsCount}
+                  cols={colsCount}
+                  orientation={orientation}
+                  rowLabels={displayRowLabels}
+                  colLabels={displayColLabels}
+                  pending={gridOp}
+                  onRequest={requestGridOp}
+                />
+              )}
             </div>
           </div>
         </div>
+
+        {/* Search highlight / temporary "إنت هنا" marker (screen-space, follows pan + zoom, never stored). */}
+        <FocusOverlay
+          target={focus?.target ?? null}
+          epoch={focus?.epoch ?? 0}
+          containerRef={containerRef}
+          getView={getRealisticView}
+          getGridOffset={getGridOffset}
+          listenerRef={focusListenerRef}
+          onClear={clearFocus}
+        />
+
+        {searchPanel && (
+          <SearchPanel
+            mode={searchPanel}
+            onModeChange={setSearchPanel}
+            onClose={() => setSearchPanel(null)}
+            farm={loading ? null : searchModel}
+            onSelect={(target) => selectFocus(target)}
+          />
+        )}
+
+        {mode === 'edit' && ctlsHidden && (
+          <div className="farm-ctl-hint" role="status" data-testid="ctl-hint">كبّر الخريطة لإظهار أزرار + و − للصفوف والأعمدة</div>
+        )}
+
+        {!session && (
+        <MapToolbar
+          onZoomIn={zoomInBtn}
+          onZoomOut={zoomOutBtn}
+          onReset={resetView}
+          searchOpen={searchPanel}
+          onSearch={() => setSearchPanel((v) => (v === 'search' ? null : 'search'))}
+          onWhere={() => setSearchPanel((v) => (v === 'where' ? null : 'where'))}
+          realisticActive={realistic.active}
+          realisticLoading={realistic.phase === 'loading'}
+          onToggleRealistic={realistic.requestToggle}
+          realisticOptionsOpen={realistic.panelOpen}
+          onToggleRealisticOptions={realistic.togglePanel}
+          legendOpen={showLegend}
+          onToggleLegend={() => setShowLegend((v) => !v)}
+        />
+        )}
       </main>
 
-      <RealisticConfirmDialog mode={realistic} />
+      {gridOp && (
+        <GridOpPanel
+          op={gridOp}
+          rows={rowsCount}
+          cols={colsCount}
+          orientation={orientation}
+          rowLabels={displayRowLabels}
+          colLabels={displayColLabels}
+          impact={gridImpact}
+          onConfirm={confirmGridOp}
+          onCancel={cancelGridOp}
+        />
+      )}
 
 
       {/* منتقي نوع الخلية — يظهر بجانب نقطة الضغط في وضع التخطيط */}
