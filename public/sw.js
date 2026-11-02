@@ -1,5 +1,5 @@
-const SHELL_CACHE = 'mango-farm-shell-v2';
-const RUNTIME_CACHE = 'mango-farm-runtime-v2';
+const SHELL_CACHE = 'mango-farm-shell-v3';
+const RUNTIME_CACHE = 'mango-farm-runtime-v3';
 const STATIC_DESTINATIONS = new Set(['script', 'style', 'font', 'image', 'worker']);
 
 async function precacheAppShell() {
@@ -65,6 +65,24 @@ self.addEventListener('fetch', (event) => {
           return response;
         })
         .catch(() => caches.match('/index.html').then((cached) => cached || caches.match('/')))
+    );
+    return;
+  }
+
+  // The optional farm-ambience recording: network first, remembered after the first successful
+  // download so the sound keeps working offline. A missing file (404 / index.html) is never cached.
+  if (url.pathname.startsWith('/audio/') && !request.headers.has('range')) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          const type = (response.headers.get('content-type') || '').toLowerCase();
+          if (response.ok && !type.includes('text/html')) {
+            const copy = response.clone();
+            caches.open(RUNTIME_CACHE).then((cache) => cache.put(request, copy)).catch(() => {});
+          }
+          return response;
+        })
+        .catch(() => caches.match(request).then((cached) => cached || Response.error()))
     );
     return;
   }
