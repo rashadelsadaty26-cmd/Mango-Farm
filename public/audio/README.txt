@@ -20,3 +20,7 @@
 
 Place your own recording at  public/audio/farm-ambience.mp3  (MP3, ideally a 1-3 minute
 seamless loop under 8 MB), then rebuild / redeploy. Nothing is generated or downloaded.
+
+تنبيه (ويندوز): إن كانت امتدادات الملفات مخفية فقد يصبح الاسم farm-ambience.mp3.mp3 أو farm-ambience.mp3.MP3 دون أن تلاحظ.
+فعّل «إظهار امتدادات الملفات» وتأكد أن الاسم النهائي هو farm-ambience.mp3 فقط، وأن حجمه بالميجابايت (وليس بضعة بايتات).
+Windows: with file extensions hidden, a double extension (farm-ambience.mp3.MP3) is easy to create. The name must be exactly farm-ambience.mp3.
